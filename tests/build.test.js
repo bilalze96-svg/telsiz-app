@@ -14,9 +14,12 @@ test("production build includes the fixed-channel push-to-talk app without LiveK
   assert.ok(javascript.includes("stun:stun.l.google.com:19302"), "direct WebRTC uses a STUN server");
   assert.ok(javascript.includes("konuşmaya başladı"), "incoming talk starts trigger a notification");
   assert.ok(javascript.includes("createMediaStreamDestination"), "outgoing audio uses the radio voice processing path");
+  assert.ok(javascript.includes("createWaveShaper"), "radio voice has saturation processing");
   assert.ok(javascript.includes("showNotification"), "permitted users receive system notifications");
+  assert.ok(javascript.includes("TELSİZ bildirimi çalışıyor"), "notification permission can be verified with a test alert");
   assert.ok(html.includes("BASILI TUT, KONUŞ"), "page contains the push-to-talk control");
   assert.ok(html.includes("GENEL KANAL"), "page contains the shared fixed channel");
   assert.ok(html.includes('id="talkToast"'), "page contains the accessible talk notification");
   assert.ok(html.includes('id="notificationButton"'), "page offers an explicit notification permission action");
+  assert.ok(html.includes("Bip ve telsiz tonu karşıya gider"), "page explains the transmitted radio sound effect");
 });

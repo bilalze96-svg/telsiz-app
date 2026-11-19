@@ -78,7 +78,9 @@ async function enableNotifications() {
     return;
   }
   if (!("Notification" in window) || !("serviceWorker" in navigator)) {
-    say("notificationMessage", "Bu tarayıcı sistem bildirimlerini desteklemiyor.");
+    say("notificationMessage", isIOS
+      ? "iPhone web bildirimleri için iOS 16.4 veya üstü ve Ana Ekran uygulaması gerekir."
+      : "Bu tarayıcı sistem bildirimlerini desteklemiyor.");
     return;
   }
 
@@ -87,14 +89,19 @@ async function enableNotifications() {
       ? "granted"
       : await Notification.requestPermission();
     if (permission === "granted") {
-      $("notificationButton").textContent = "BİLDİRİMLER AÇIK";
-      $("notificationButton").disabled = true;
-      say("notificationMessage", "TELSİZ açıkken biri konuşmaya başlayınca sistem bildirimi gösterilecek.");
+      $("notificationButton").textContent = "BİLDİRİMİ TEST ET";
+      const registration = await navigator.serviceWorker.ready;
+      await registration.showNotification("TELSİZ bildirimi çalışıyor", {
+        body: "Bu telefonda bildirim izni açık.",
+        icon: "/icons/apple-touch-icon.png",
+        tag: "telsiz-notification-test"
+      });
+      say("notificationMessage", "Deneme bildirimi gönderildi. Konuşma bildirimleri TELSİZ açıkken gelir.");
     } else {
-      say("notificationMessage", "Bildirim izni verilmedi. iPhone Ayarlar’dan TELSİZ bildirimlerine izin ver.");
+      say("notificationMessage", "İzin kapalı. iPhone Ayarlar → Bildirimler → TELSİZ bölümünden izin ver.");
     }
   } catch {
-    say("notificationMessage", "Bildirim izni alınamadı. TELSİZ’i Ana Ekran simgesinden açıp tekrar dene.");
+    say("notificationMessage", "Bildirim açılamadı. TELSİZ’i Ana Ekran simgesinden açıp tekrar dene.");
   }
 }
 
@@ -108,17 +115,33 @@ function notifyNewTalkers(previous, current) {
 function playPttTone() {
   if (!audioContext || !pttToneGain) return;
   audioContext.resume().catch(() => {});
-  const oscillator = audioContext.createOscillator();
-  const envelope = audioContext.createGain();
   const now = audioContext.currentTime;
-  oscillator.type = "sine";
-  oscillator.frequency.setValueAtTime(980, now);
-  envelope.gain.setValueAtTime(0.001, now);
-  envelope.gain.exponentialRampToValueAtTime(0.08, now + 0.008);
-  envelope.gain.exponentialRampToValueAtTime(0.001, now + 0.095);
-  oscillator.connect(envelope).connect(pttToneGain);
-  oscillator.start(now);
-  oscillator.stop(now + 0.1);
+  for (const start of [now, now + 0.085]) {
+    const oscillator = audioContext.createOscillator();
+    const envelope = audioContext.createGain();
+    oscillator.type = "square";
+    oscillator.frequency.setValueAtTime(1040, start);
+    envelope.gain.setValueAtTime(0.001, start);
+    envelope.gain.exponentialRampToValueAtTime(0.16, start + 0.006);
+    envelope.gain.exponentialRampToValueAtTime(0.001, start + 0.06);
+    oscillator.connect(envelope).connect(pttToneGain);
+    oscillator.start(start);
+    oscillator.stop(start + 0.065);
+  }
+
+  const noiseLength = Math.floor(audioContext.sampleRate * 0.035);
+  const noiseBuffer = audioContext.createBuffer(1, noiseLength, audioContext.sampleRate);
+  const noise = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < noise.length; i++) {
+    const fade = 1 - i / noise.length;
+    noise[i] = (Math.random() * 2 - 1) * fade;
+  }
+  const crackle = audioContext.createBufferSource();
+  const crackleGain = audioContext.createGain();
+  crackle.buffer = noiseBuffer;
+  crackleGain.gain.value = 0.08;
+  crackle.connect(crackleGain).connect(pttToneGain);
+  crackle.start(now);
 }
 
 function createRadioAudioTrack() {
@@ -135,20 +158,32 @@ function createRadioAudioTrack() {
   const source = audioContext.createMediaStreamSource(localStream);
   const highPass = audioContext.createBiquadFilter();
   highPass.type = "highpass";
-  highPass.frequency.value = 300;
+  highPass.frequency.value = 380;
   const lowPass = audioContext.createBiquadFilter();
   lowPass.type = "lowpass";
-  lowPass.frequency.value = 3000;
+  lowPass.frequency.value = 2700;
+  const drive = audioContext.createGain();
+  drive.gain.value = 1.8;
+  const saturation = audioContext.createWaveShaper();
+  const curve = new Float32Array(256);
+  const amount = 2.4;
+  const normalization = Math.tanh(amount);
+  for (let i = 0; i < curve.length; i++) {
+    const sample = (i * 2) / (curve.length - 1) - 1;
+    curve[i] = Math.tanh(amount * sample) / normalization;
+  }
+  saturation.curve = curve;
+  saturation.oversample = "2x";
   const compressor = audioContext.createDynamicsCompressor();
-  compressor.threshold.value = -23;
-  compressor.knee.value = 18;
-  compressor.ratio.value = 4;
-  compressor.attack.value = 0.004;
-  compressor.release.value = 0.16;
+  compressor.threshold.value = -28;
+  compressor.knee.value = 12;
+  compressor.ratio.value = 7;
+  compressor.attack.value = 0.003;
+  compressor.release.value = 0.12;
   const destination = audioContext.createMediaStreamDestination();
   pttToneGain = audioContext.createGain();
 
-  source.connect(highPass).connect(lowPass).connect(compressor);
+  source.connect(highPass).connect(lowPass).connect(drive).connect(saturation).connect(compressor);
   pttToneGain.connect(compressor);
   compressor.connect(destination);
   outgoingStream = destination.stream;
@@ -488,10 +523,14 @@ $("enableAudioButton").addEventListener("click", async () => {
   $("enableAudioButton").classList.add("hidden");
 });
 window.addEventListener("blur", () => setTalking(false));
-function exitForBackground() {
+function muteForBackground() {
   if (localTrack) localTrack.enabled = false;
   if (microphoneTrack) microphoneTrack.enabled = false;
   if (joined && talking) setTalking(false);
+}
+
+function exitForPageClose() {
+  muteForBackground();
   if (joined) {
     void leaveChannel();
   } else {
@@ -500,13 +539,18 @@ function exitForBackground() {
     closeRadioAudio();
   }
 }
-document.addEventListener("visibilitychange", () => { if (document.hidden) exitForBackground(); });
-window.addEventListener("pagehide", exitForBackground);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    muteForBackground();
+  } else if (joined && ownMemberRef) {
+    updateDoc(ownMemberRef, { lastSeen: serverTimestamp() }).catch(() => {});
+  }
+});
+window.addEventListener("pagehide", exitForPageClose);
 $("notificationButton").addEventListener("click", enableNotifications);
 if ("Notification" in window && Notification.permission === "granted") {
-  $("notificationButton").textContent = "BİLDİRİMLER AÇIK";
-  $("notificationButton").disabled = true;
-  say("notificationMessage", "TELSİZ açıkken biri konuşmaya başlayınca sistem bildirimi gösterilecek.");
+  $("notificationButton").textContent = "BİLDİRİMİ TEST ET";
+  say("notificationMessage", "Bildirim izni açık. Düğmeye basıp deneme bildirimi gönder.");
 }
 
 try { $("nameInput").value = localStorage.getItem("telsiz-name") || ""; } catch {}
