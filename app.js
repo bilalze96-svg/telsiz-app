@@ -28,6 +28,10 @@ let sessionId = "";
 let ownMemberRef = null;
 let localStream = null;
 let localTrack = null;
+let microphoneTrack = null;
+let outgoingStream = null;
+let audioContext = null;
+let pttToneGain = null;
 let talking = false;
 let memberCache = new Map();
 let peers = new Map();
@@ -53,6 +57,45 @@ function announceTalkers(names) {
   clearTimeout(talkToastTimer);
   talkToastTimer = setTimeout(() => toast.classList.add("hidden"), 3200);
   if (typeof navigator.vibrate === "function") navigator.vibrate(120);
+  if ("Notification" in window && Notification.permission === "granted") {
+    navigator.serviceWorker?.ready
+      .then(registration => registration.showNotification("TELSİZ", {
+        body: message,
+        icon: "/icons/icon.svg",
+        tag: "telsiz-talk-start",
+        renotify: true
+      }))
+      .catch(() => {});
+  }
+}
+
+async function enableNotifications() {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isStandalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  if (isIOS && !isStandalone) {
+    say("notificationMessage", "iPhone’da önce Safari: Paylaş → Ana Ekrana Ekle. Sonra TELSİZ’i simgeden açıp bu düğmeye bas.");
+    return;
+  }
+  if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+    say("notificationMessage", "Bu tarayıcı sistem bildirimlerini desteklemiyor.");
+    return;
+  }
+
+  try {
+    const permission = Notification.permission === "granted"
+      ? "granted"
+      : await Notification.requestPermission();
+    if (permission === "granted") {
+      $("notificationButton").textContent = "BİLDİRİMLER AÇIK";
+      $("notificationButton").disabled = true;
+      say("notificationMessage", "TELSİZ açıkken biri konuşmaya başlayınca sistem bildirimi gösterilecek.");
+    } else {
+      say("notificationMessage", "Bildirim izni verilmedi. iPhone Ayarlar’dan TELSİZ bildirimlerine izin ver.");
+    }
+  } catch {
+    say("notificationMessage", "Bildirim izni alınamadı. TELSİZ’i Ana Ekran simgesinden açıp tekrar dene.");
+  }
 }
 
 function notifyNewTalkers(previous, current) {
@@ -60,6 +103,72 @@ function notifyNewTalkers(previous, current) {
     .filter(([id, member]) => id !== sessionId && isFresh(member) && member.talking && !previous.get(id)?.talking)
     .map(([, member]) => member.name);
   if (names.length) announceTalkers(names);
+}
+
+function playPttTone() {
+  if (!audioContext || !pttToneGain) return;
+  audioContext.resume().catch(() => {});
+  const oscillator = audioContext.createOscillator();
+  const envelope = audioContext.createGain();
+  const now = audioContext.currentTime;
+  oscillator.type = "sine";
+  oscillator.frequency.setValueAtTime(980, now);
+  envelope.gain.setValueAtTime(0.001, now);
+  envelope.gain.exponentialRampToValueAtTime(0.08, now + 0.008);
+  envelope.gain.exponentialRampToValueAtTime(0.001, now + 0.095);
+  oscillator.connect(envelope).connect(pttToneGain);
+  oscillator.start(now);
+  oscillator.stop(now + 0.1);
+}
+
+function createRadioAudioTrack() {
+  microphoneTrack = localStream?.getAudioTracks()[0] || null;
+  if (!microphoneTrack) throw new Error("Mikrofon bulunamadı.");
+  microphoneTrack.enabled = false;
+
+  if (!audioContext) {
+    localTrack = microphoneTrack;
+    outgoingStream = localStream;
+    return;
+  }
+
+  const source = audioContext.createMediaStreamSource(localStream);
+  const highPass = audioContext.createBiquadFilter();
+  highPass.type = "highpass";
+  highPass.frequency.value = 300;
+  const lowPass = audioContext.createBiquadFilter();
+  lowPass.type = "lowpass";
+  lowPass.frequency.value = 3000;
+  const compressor = audioContext.createDynamicsCompressor();
+  compressor.threshold.value = -23;
+  compressor.knee.value = 18;
+  compressor.ratio.value = 4;
+  compressor.attack.value = 0.004;
+  compressor.release.value = 0.16;
+  const destination = audioContext.createMediaStreamDestination();
+  pttToneGain = audioContext.createGain();
+
+  source.connect(highPass).connect(lowPass).connect(compressor);
+  pttToneGain.connect(compressor);
+  compressor.connect(destination);
+  outgoingStream = destination.stream;
+  localTrack = outgoingStream.getAudioTracks()[0];
+  localTrack.enabled = false;
+}
+
+function closeRadioAudio() {
+  if (microphoneTrack) microphoneTrack.enabled = false;
+  if (localTrack) localTrack.enabled = false;
+  talking = false;
+  outgoingStream?.getTracks().forEach(track => track.stop());
+  outgoingStream = null;
+  microphoneTrack = null;
+  localTrack = null;
+  pttToneGain = null;
+  if (audioContext) {
+    audioContext.close().catch(() => {});
+    audioContext = null;
+  }
 }
 
 function isFresh(member) {
@@ -170,7 +279,7 @@ async function startOffer(peer) {
 }
 
 function addPeer(id, member) {
-  if (peers.has(id) || !localStream || id === sessionId) return;
+  if (peers.has(id) || !outgoingStream || id === sessionId) return;
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   const peer = {
     id,
@@ -183,7 +292,7 @@ function addPeer(id, member) {
     audio: null
   };
   peers.set(id, peer);
-  for (const track of localStream.getAudioTracks()) pc.addTrack(track, localStream);
+  for (const track of outgoingStream.getAudioTracks()) pc.addTrack(track, outgoingStream);
 
   pc.onicecandidate = event => {
     if (event.candidate) {
@@ -274,6 +383,11 @@ async function joinChannel() {
   $("joinButton").disabled = true;
   say("joinMessage", "Kanala bağlanıyor…");
   try {
+    const AudioContextType = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextType && !audioContext) {
+      audioContext = new AudioContextType({ latencyHint: "interactive" });
+      audioContext.resume().catch(() => {});
+    }
     user = (await signInAnonymously(auth)).user;
     await cleanStaleSessions();
     const current = await getDocs(query(members, limit(MAX_PEOPLE + 1)));
@@ -284,9 +398,7 @@ async function joinChannel() {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false
     });
-    localTrack = localStream.getAudioTracks()[0];
-    if (!localTrack) throw new Error("Mikrofon bulunamadı.");
-    localTrack.enabled = false;
+    createRadioAudioTrack();
     sessionId = crypto.randomUUID();
     ownMemberRef = sessionRef(sessionId);
     await setDoc(ownMemberRef, {
@@ -306,7 +418,7 @@ async function joinChannel() {
   } catch (error) {
     localStream?.getTracks().forEach(track => track.stop());
     localStream = null;
-    localTrack = null;
+    closeRadioAudio();
     say("joinMessage", error.code === "permission-denied" ? "Mikrofon izni ver; sonra tekrar katıl." : error.message || "Kanala girilemedi.");
   } finally {
     $("joinButton").disabled = false;
@@ -316,7 +428,9 @@ async function joinChannel() {
 function setTalking(value) {
   if (!joined || !localTrack || talking === value) return;
   talking = value;
+  if (microphoneTrack) microphoneTrack.enabled = value;
   localTrack.enabled = value;
+  if (value) playPttTone();
   $("talkButton").classList.toggle("pressed", value);
   $("talkButton").setAttribute("aria-pressed", String(value));
   say("talkLabel", value ? "KONUŞUYORSUN" : "BASILI TUT, KONUŞ");
@@ -333,13 +447,15 @@ async function leaveChannel() {
   for (const id of [...peers.keys()]) closePeer(id);
   localStream?.getTracks().forEach(track => track.stop());
   localStream = null;
-  localTrack = null;
-  if (sessionId) {
-    const pending = await getDocs(inboxRef(sessionId)).catch(() => null);
+  closeRadioAudio();
+  const leavingSessionId = sessionId;
+  if (leavingSessionId) {
+    const pending = await getDocs(inboxRef(leavingSessionId)).catch(() => null);
     if (pending) await Promise.all(pending.docs.map(item => deleteDoc(item.ref).catch(() => {})));
   }
   if (ownMemberRef) await deleteDoc(ownMemberRef).catch(() => {});
   ownMemberRef = null;
+  sessionId = "";
   memberCache.clear();
   channelSnapshotInitialized = false;
   bufferedSignals.clear();
@@ -371,14 +487,27 @@ $("enableAudioButton").addEventListener("click", async () => {
   for (const peer of peers.values()) await peer.audio?.play().catch(() => {});
   $("enableAudioButton").classList.add("hidden");
 });
-document.addEventListener("visibilitychange", () => { if (document.hidden) setTalking(false); });
 window.addEventListener("blur", () => setTalking(false));
-window.addEventListener("pagehide", () => {
-  if (sessionId) getDocs(inboxRef(sessionId)).then(snapshot => Promise.all(snapshot.docs.map(item => deleteDoc(item.ref)))).catch(() => {});
-  if (ownMemberRef) deleteDoc(ownMemberRef).catch(() => {});
-  for (const peer of peers.values()) peer.pc.close();
-  localStream?.getTracks().forEach(track => track.stop());
-});
+function exitForBackground() {
+  if (localTrack) localTrack.enabled = false;
+  if (microphoneTrack) microphoneTrack.enabled = false;
+  if (joined && talking) setTalking(false);
+  if (joined) {
+    void leaveChannel();
+  } else {
+    localStream?.getTracks().forEach(track => track.stop());
+    localStream = null;
+    closeRadioAudio();
+  }
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden) exitForBackground(); });
+window.addEventListener("pagehide", exitForBackground);
+$("notificationButton").addEventListener("click", enableNotifications);
+if ("Notification" in window && Notification.permission === "granted") {
+  $("notificationButton").textContent = "BİLDİRİMLER AÇIK";
+  $("notificationButton").disabled = true;
+  say("notificationMessage", "TELSİZ açıkken biri konuşmaya başlayınca sistem bildirimi gösterilecek.");
+}
 
 try { $("nameInput").value = localStorage.getItem("telsiz-name") || ""; } catch {}
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));

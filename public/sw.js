@@ -1,4 +1,4 @@
-const CACHE = "telsiz-shell-v4";
+const CACHE = "telsiz-shell-v5";
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg", "/icons/apple-touch-icon.png"];
 
 self.addEventListener("install", event => {
@@ -11,6 +11,14 @@ self.addEventListener("activate", event => {
     keys.filter(key => key.startsWith("telsiz-shell-") && key !== CACHE).map(key => caches.delete(key))
   )));
   self.clients.claim();
+});
+
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(clients => {
+    const existing = clients.find(client => "focus" in client);
+    return existing ? existing.focus() : self.clients.openWindow("/");
+  }));
 });
 
 self.addEventListener("fetch", event => {

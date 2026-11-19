@@ -46,6 +46,8 @@ input { width: 100%; padding: 15px 14px; border: 1px solid #5a6f62; border-radiu
 input:focus { border-color: var(--mint); }
 .join-button { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-top: 13px; padding: 16px 18px; border: 0; border-radius: 14px; background: var(--mint); color: #172519; font-size: 13px; font-weight: 900; letter-spacing: .7px; }
 .join-button span { font-size: 23px; line-height: 16px; }
+.notification-button { display: block; width: 100%; margin-top: 4px; padding: 12px; border: 1px solid #5a6f62; border-radius: 12px; background: #263a31; color: #d8efc6; font-size: 11px; font-weight: 900; letter-spacing: .7px; }
+.notification-message { min-height: 18px; margin: 7px 0 0; color: #b6c7ba; font-size: 11px; line-height: 1.45; text-align: center; }
 .message { min-height: 18px; margin: 11px 0 0; color: #f2d899; font-size: 12px; line-height: 1.5; }
 .radio-card { padding: 23px 21px 18px; }
 .channel-heading { display: flex; justify-content: space-between; align-items: center; }
