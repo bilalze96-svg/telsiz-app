@@ -11,8 +11,8 @@
     "build": "vite build",
     "test:static": "node --test tests/pwa.test.js",
     "test:build": "node --test tests/build.test.js",
-    "test:rules": "firebase emulators:exec --only firestore --project telsiz-app-88ecf \"node --test --test-concurrency=1 tests/firestore.rules.test.js functions/test/room-moderation.emulator.test.js\"",
-    "validate": "node --check app.js && node --check functions/index.js && npm run test:static && npm run build && npm run test:build && npm run lint --prefix functions && npm test --prefix functions && npm run test:rules"
+    "test:rules": "firebase emulators:exec --only firestore --project demo-telsiz \"node --test --test-concurrency=1 tests/firestore.rules.test.js\"",
+    "validate": "node --check app.js && npm run test:static && npm run build && npm run test:build && npm run test:rules"
   },
   "dependencies": {
     "firebase": "13.4.0",

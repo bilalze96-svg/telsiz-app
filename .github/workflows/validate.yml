@@ -19,11 +19,7 @@ jobs:
           java-version: 21
       - name: Install frontend dependencies
         run: npm ci
-      - name: Install function dependencies
-        run: npm ci --prefix functions
       - name: Validate syntax, PWA files, and build
-        run: node --check app.js && node --check functions/index.js && npm run test:static && npm run build && npm run test:build
-      - name: Validate and test Cloud Functions
-        run: npm run lint --prefix functions && npm test --prefix functions
+        run: node --check app.js && npm run test:static && npm run build && npm run test:build
       - name: Run Firestore Rules tests in the Emulator
         run: npm run test:rules

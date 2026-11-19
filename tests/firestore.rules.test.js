@@ -1,26 +1,13 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { after, before, beforeEach, test } from "node:test";
+import { assertFails, assertSucceeds, initializeTestEnvironment } from "@firebase/rules-unit-testing";
 import {
-  assertFails,
-  assertSucceeds,
-  initializeTestEnvironment
-} from "@firebase/rules-unit-testing";
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where
+  collection, deleteDoc, doc, getDocs, limit, query, serverTimestamp,
+  setDoc, Timestamp, updateDoc
 } from "firebase/firestore";
 
 const projectId = "telsiz-app-88ecf";
-const roomId = "ABCDEF123456";
 let testEnvironment;
 
 function firestoreFor(uid) {
@@ -29,31 +16,31 @@ function firestoreFor(uid) {
   }).firestore();
 }
 
-function roomDocument(db, id = roomId) {
-  return doc(db, "rooms", id);
-}
+function memberRef(db, id) { return doc(db, "members", id); }
+function inboxRef(db, targetId, signalId = "signal-123456") { return doc(db, "members", targetId, "inbox", signalId); }
 
-function memberDocument(db, uid, id = roomId) {
-  return doc(db, "rooms", id, "members", uid);
-}
-
-async function seedRoom(members = []) {
+async function seedMember(id, uid, lastSeen = serverTimestamp()) {
   await testEnvironment.withSecurityRulesDisabled(async context => {
-    const db = context.firestore();
-    await setDoc(roomDocument(db), {
-      hostUid: "host",
-      status: "open",
-      createdAt: serverTimestamp(),
-      title: "EKİP ODASI"
+    await setDoc(memberRef(context.firestore(), id), {
+      uid,
+      name: uid,
+      joinedAt: serverTimestamp(),
+      lastSeen,
+      talking: false
     });
-    for (const member of members) {
-      await setDoc(memberDocument(db, member.uid), {
-        name: member.name || member.uid,
-        status: member.status,
-        joinedAt: serverTimestamp()
-      });
-    }
   });
+}
+
+function signal(fromSession, fromUid, toSession, fields = {}) {
+  return {
+    fromSession,
+    fromUid,
+    toSession,
+    kind: "offer",
+    payload: JSON.stringify({ type: "offer", sdp: "example-sdp" }),
+    createdAt: serverTimestamp(),
+    ...fields
+  };
 }
 
 before(async () => {
@@ -70,123 +57,67 @@ before(async () => {
 beforeEach(async () => testEnvironment.clearFirestore());
 after(async () => testEnvironment?.cleanup());
 
-test("room owner can create an open room and approved owner membership", async () => {
-  const db = firestoreFor("host");
-  await assertSucceeds(setDoc(roomDocument(db), {
-    hostUid: "host",
-    status: "open",
-    createdAt: serverTimestamp(),
-    title: "EKİP ODASI"
+test("anonymous visitors can join the shared channel and see its roster", async () => {
+  const db = firestoreFor("user-a");
+  await assertSucceeds(setDoc(memberRef(db, "session-user-a"), {
+    uid: "user-a", name: "Ece", joinedAt: serverTimestamp(), lastSeen: serverTimestamp(), talking: false
   }));
-  await assertSucceeds(setDoc(memberDocument(db, "host"), {
-    name: "Oda sahibi",
-    status: "approved",
-    joinedAt: serverTimestamp()
-  }));
+  const roster = await assertSucceeds(getDocs(query(collection(db, "members"), limit(10))));
+  assert.equal(roster.size, 1);
+  await assertSucceeds(updateDoc(memberRef(db, "session-user-a"), { talking: true, lastSeen: serverTimestamp() }));
 });
 
-test("room creation rejects nonanonymous users, invalid IDs, and extra fields", async () => {
-  const anonymousDb = firestoreFor("host");
-  const passwordDb = testEnvironment.authenticatedContext("password-user", {
+test("nonanonymous users and forged or invalid member sessions are rejected", async () => {
+  const anon = firestoreFor("user-a");
+  const password = testEnvironment.authenticatedContext("password-user", {
     firebase: { sign_in_provider: "password" }
   }).firestore();
-  const roomData = {
-    hostUid: "host",
-    status: "open",
-    createdAt: serverTimestamp(),
-    title: "EKİP ODASI"
-  };
-
-  await assertFails(setDoc(roomDocument(passwordDb), roomData));
-  await assertFails(setDoc(roomDocument(anonymousDb, "short"), roomData));
-  await assertFails(setDoc(roomDocument(anonymousDb), { ...roomData, isAdmin: true }));
-  await assertFails(setDoc(roomDocument(anonymousDb), { ...roomData, hostUid: "other" }));
+  const data = { uid: "user-a", name: "Ece", joinedAt: serverTimestamp(), lastSeen: serverTimestamp(), talking: false };
+  await assertFails(setDoc(memberRef(password, "session-user-b"), data));
+  await assertFails(setDoc(memberRef(anon, "short"), data));
+  await assertFails(setDoc(memberRef(anon, "session-user-a"), { ...data, uid: "other-user" }));
+  await assertFails(setDoc(memberRef(anon, "session-user-a"), { ...data, name: "" }));
+  await assertFails(setDoc(memberRef(testEnvironment.unauthenticatedContext().firestore(), "session-user-c"), data));
 });
 
-test("invitee can read an open room and submit only their own pending request", async () => {
-  await seedRoom([{ uid: "host", status: "approved" }]);
-  const invitee = firestoreFor("invitee");
-  await assertSucceeds(getDoc(roomDocument(invitee)));
-  await assertSucceeds(setDoc(memberDocument(invitee, "invitee"), {
-    name: "Misafir",
-    status: "pending",
-    joinedAt: serverTimestamp()
+test("a member can change only their own name and talk status", async () => {
+  await seedMember("session-user-a", "user-a");
+  const owner = firestoreFor("user-a");
+  const other = firestoreFor("user-b");
+  await assertSucceeds(updateDoc(memberRef(owner, "session-user-a"), {
+    name: "Ece Yeni", lastSeen: serverTimestamp(), talking: true
   }));
-
-  await assertFails(setDoc(memberDocument(invitee, "other-user"), {
-    name: "Başka kullanıcı",
-    status: "pending",
-    joinedAt: serverTimestamp()
-  }));
-  const otherInvitee = firestoreFor("second");
-  await assertFails(setDoc(memberDocument(otherInvitee, "second"), {
-    name: "Yetkisiz onay",
-    status: "approved",
-    joinedAt: serverTimestamp()
-  }));
+  await assertFails(updateDoc(memberRef(owner, "session-user-a"), { uid: "user-b", lastSeen: serverTimestamp() }));
+  await assertFails(updateDoc(memberRef(other, "session-user-a"), { talking: true, lastSeen: serverTimestamp() }));
+  await assertSucceeds(deleteDoc(memberRef(owner, "session-user-a")));
 });
 
-test("pending members can read their request but cannot list or inspect the roster", async () => {
-  await seedRoom([
-    { uid: "host", status: "approved" },
-    { uid: "invitee", status: "pending" }
-  ]);
-  const invitee = firestoreFor("invitee");
-  await assertSucceeds(getDoc(memberDocument(invitee, "invitee")));
-  await assertFails(getDoc(memberDocument(invitee, "host")));
-  await assertFails(getDocs(collection(invitee, "rooms", roomId, "members")));
+test("members can signal another live session, and only the recipient can read it", async () => {
+  await seedMember("session-user-a", "user-a");
+  await seedMember("session-user-b", "user-b");
+  const sender = firestoreFor("user-a");
+  const recipient = firestoreFor("user-b");
+  const outsider = firestoreFor("user-c");
+  await assertSucceeds(setDoc(inboxRef(sender, "session-user-b"), signal("session-user-a", "user-a", "session-user-b")));
+  await assertSucceeds(getDocs(collection(recipient, "members", "session-user-b", "inbox")));
+  await assertFails(getDocs(collection(sender, "members", "session-user-b", "inbox")));
+  await assertFails(getDocs(collection(outsider, "members", "session-user-b", "inbox")));
+  await assertSucceeds(deleteDoc(inboxRef(recipient, "session-user-b")));
 });
 
-test("approved members can query approved roster rows while pending rows remain private", async () => {
-  await seedRoom([
-    { uid: "host", status: "approved" },
-    { uid: "approved", status: "approved" },
-    { uid: "pending", status: "pending" }
-  ]);
-  const approved = firestoreFor("approved");
-  const host = firestoreFor("host");
-  const members = collection(approved, "rooms", roomId, "members");
-  const approvedRows = await assertSucceeds(getDocs(query(members, where("status", "==", "approved"))));
-  assert.equal(approvedRows.size, 2);
-  await assertFails(getDocs(members));
-  await assertFails(getDoc(memberDocument(approved, "pending")));
-  const hostRows = await assertSucceeds(getDocs(collection(host, "rooms", roomId, "members")));
-  assert.equal(hostRows.size, 3);
+test("signaling cannot impersonate another sender, target a nonexistent session, or exceed payload limits", async () => {
+  await seedMember("session-user-a", "user-a");
+  await seedMember("session-user-b", "user-b");
+  const sender = firestoreFor("user-a");
+  await assertFails(setDoc(inboxRef(sender, "session-user-b"), signal("session-user-x", "user-a", "session-user-b")));
+  await assertFails(setDoc(inboxRef(sender, "session-missing"), signal("session-user-a", "user-a", "session-missing")));
+  await assertFails(setDoc(inboxRef(sender, "session-user-b"), signal("session-user-a", "user-a", "session-user-b", { payload: "x".repeat(12001) })));
 });
 
-test("only the moderation function can approve or reject a pending member", async () => {
-  await seedRoom([
-    { uid: "host", status: "approved" },
-    { uid: "invitee", status: "pending" }
-  ]);
-  const host = firestoreFor("host");
-  await assertFails(updateDoc(memberDocument(host, "invitee"), {
-    status: "approved",
-    approvedAt: serverTimestamp()
-  }));
-  await assertFails(updateDoc(memberDocument(host, "invitee"), { status: "rejected" }));
-});
-
-test("host can close an open room, while other room and membership mutations are denied", async () => {
-  await seedRoom([
-    { uid: "host", status: "approved" },
-    { uid: "invitee", status: "pending" }
-  ]);
-  const host = firestoreFor("host");
-  const invitee = firestoreFor("invitee");
-
-  await assertFails(updateDoc(roomDocument(invitee), {
-    status: "closed",
-    closedAt: serverTimestamp()
-  }));
-  await assertFails(deleteDoc(roomDocument(host)));
-  await assertFails(setDoc(doc(host, "rooms", roomId, "signals", "signal"), {
-    from: "host", to: "invitee", type: "offer", payload: "raw-sdp"
-  }));
-  await assertSucceeds(updateDoc(roomDocument(host), {
-    status: "closed",
-    closedAt: serverTimestamp()
-  }));
-  await assertSucceeds(getDoc(roomDocument(invitee)));
-  await assertSucceeds(deleteDoc(memberDocument(invitee, "invitee")));
+test("other anonymous visitors can remove expired sessions but not active ones", async () => {
+  await seedMember("session-expired", "user-a", Timestamp.fromMillis(Date.now() - 120_000));
+  await seedMember("session-current", "user-b");
+  const cleaner = firestoreFor("user-c");
+  await assertSucceeds(deleteDoc(memberRef(cleaner, "session-expired")));
+  await assertFails(deleteDoc(memberRef(cleaner, "session-current")));
 });

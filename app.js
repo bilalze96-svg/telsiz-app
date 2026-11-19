@@ -1,14 +1,12 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import {
-  getFirestore, collection, doc, getDoc, setDoc, updateDoc, deleteDoc,
-  onSnapshot, query, where, serverTimestamp
+  addDoc, collection, deleteDoc, doc, getDocs, getFirestore, limit, onSnapshot,
+  query, serverTimestamp, setDoc, Timestamp, updateDoc, where
 } from "firebase/firestore";
-import { getFunctions, httpsCallable } from "firebase/functions";
 
-// Firebase web configuration contains public client identifiers; Firestore Rules protect data.
 const firebaseConfig = {
-  apiKey: "AIzaSyDdXDYDxwbLn3BhnQGxJzhsQnKc0TP1EM",
+  apiKey: "AIzaSyDdXDYDxwbLn3BhnNQGxJzhsQnKc0TP1EM",
   authDomain: "telsiz-app-88ecf.firebaseapp.com",
   projectId: "telsiz-app-88ecf",
   storageBucket: "telsiz-app-88ecf.firebasestorage.app",
@@ -16,538 +14,342 @@ const firebaseConfig = {
   appId: "1:217716786139:web:0d7bf957bf2f5afa031dfe"
 };
 
-const $ = (id) => document.getElementById(id);
-const inviteFromUrl = new URLSearchParams(location.search).get("room");
-const appInstance = initializeApp(firebaseConfig);
-const auth = getAuth(appInstance);
-const FIRESTORE_DATABASE_ID = "default";
-const db = getFirestore(appInstance, FIRESTORE_DATABASE_ID);
-const functions = getFunctions(appInstance, "europe-west1");
-const issueRoomToken = httpsCallable(functions, "getRoomToken");
-const moderateMember = httpsCallable(functions, "moderateRoomMember");
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app, "default");
+const members = collection(db, "members");
+const MAX_PEOPLE = 10;
+const STALE_MS = 45_000;
+const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+const $ = id => document.getElementById(id);
 
 let user = null;
-let roomId = "";
-let displayName = "";
-let isHost = false;
-let active = false;
-let memberApproved = false;
-let talkPressed = false;
-let manuallyMuted = false;
-let micTrack = null;
-let micOperation = Promise.resolve();
-let liveKitRoom = null;
-let voiceConnectPromise = null;
-let liveKitSDKPromise = null;
-let liveKitSDK = null;
+let sessionId = "";
+let ownMemberRef = null;
+let localStream = null;
+let localTrack = null;
+let talking = false;
 let memberCache = new Map();
-let roomUnsubscribe = null;
-let ownMemberUnsubscribe = null;
-let memberListUnsubscribe = null;
-let cleanupPromise = null;
+let peers = new Map();
+let bufferedSignals = new Map();
+let membersUnsubscribe = null;
+let inboxUnsubscribe = null;
+let heartbeatTimer = null;
+let joined = false;
 
-function message(id, text) { $(id).textContent = text; }
-function setRoomState(text) { $("roomState").textContent = text; }
-function roomRef() { return doc(db, "rooms", roomId); }
-function membersRef() { return collection(db, "rooms", roomId, "members"); }
-function memberRef(uid = user.uid) { return doc(db, "rooms", roomId, "members", uid); }
-function cleanName(value) {
-  return value.trim().replace(/[<>]/g, "").replace(/\s+/g, " ").slice(0, 24);
-}
-function inviteCode(value) {
-  const input = (value || "").trim();
-  let code = input;
-  try {
-    const parsed = new URL(input);
-    code = parsed.searchParams.get("room") || input;
-  } catch {}
-  return code.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
-}
-function errorText(error) {
-  return error?.message || "Beklenmeyen bir hata oluştu.";
+function say(id, text) { $(id).textContent = text; }
+function validName(value) { return value.trim().replace(/[<>]/g, "").replace(/\s+/g, " ").slice(0, 24); }
+function sessionRef(id) { return doc(db, "members", id); }
+function inboxRef(id) { return collection(db, "members", id, "inbox"); }
+function isFresh(member) {
+  const seenAt = member.lastSeen?.toDate?.().getTime();
+  return Number.isFinite(seenAt) && Date.now() - seenAt < STALE_MS;
 }
 
-function loadLiveKitSDK() {
-  if (!liveKitSDKPromise) liveKitSDKPromise = import("livekit-client").then(sdk => {
-    liveKitSDK = sdk;
-    return sdk;
-  });
-  return liveKitSDKPromise;
-}
-
-function stopListeners() {
-  [roomUnsubscribe, ownMemberUnsubscribe, memberListUnsubscribe].forEach(unsubscribe => unsubscribe?.());
-  roomUnsubscribe = null;
-  ownMemberUnsubscribe = null;
-  memberListUnsubscribe = null;
-}
-
-function showRoom() {
-  $("welcome").classList.add("hidden");
-  $("room").classList.remove("hidden");
-  $("roomName").textContent = "EKİP ODASI";
-  $("inviteText").textContent = `${location.origin}${location.pathname}?room=${roomId}`;
-  $("closeRoom").classList.toggle("hidden", !isHost);
-  $("requestsBox").classList.toggle("hidden", !isHost);
-  $("talkButton").disabled = true;
-  $("talkButton").querySelector("small").textContent = "Ses bağlantısı kuruluyor";
-  $("muteButton").disabled = true;
-}
-
-function showWelcome(text = "") {
-  $("room").classList.add("hidden");
-  $("welcome").classList.remove("hidden");
-  message("welcomeMsg", text);
-  history.replaceState({}, "", location.pathname);
-}
-
-function renderPeople() {
-  const people = [...memberCache.values()].filter(member => member.status === "approved");
-  const remoteParticipants = liveKitRoom?.remoteParticipants;
-  $("people").replaceChildren();
-  people.forEach(member => {
-    const li = document.createElement("li");
+function renderMembers() {
+  const online = [...memberCache.entries()]
+    .filter(([, member]) => isFresh(member))
+    .sort((a, b) => a[1].joinedAt?.toMillis?.() - b[1].joinedAt?.toMillis?.());
+  const list = $("peopleList");
+  list.replaceChildren();
+  for (const [id, member] of online) {
+    const row = document.createElement("li");
     const name = document.createElement("span");
-    name.textContent = member.name || "Katılımcı";
+    name.textContent = id === sessionId ? `${member.name} (sen)` : member.name;
     const state = document.createElement("span");
-    state.className = "person-state";
-    state.textContent = member.uid === user.uid
-      ? "Bu cihaz"
-      : remoteParticipants?.has(member.uid) ? "Ses bağlı" : "Onaylandı";
-    li.append(name, state);
-    $("people").append(li);
-  });
-  $("peopleCount").textContent = `${people.length} kişi`;
-}
-
-function renderRequests() {
-  const box = $("requests");
-  box.replaceChildren();
-  [...memberCache.values()].filter(member => member.status === "pending").forEach(member => {
-    const li = document.createElement("li");
-    const name = document.createElement("span");
-    name.textContent = member.name || "Misafir";
-    const actions = document.createElement("span");
-    const approve = document.createElement("button");
-    approve.className = "copy";
-    approve.textContent = "Onayla";
-    approve.addEventListener("click", () => decideMember(member.uid, "approved"));
-    const reject = document.createElement("button");
-    reject.className = "danger request-reject";
-    reject.textContent = "Reddet";
-    reject.addEventListener("click", () => decideMember(member.uid, "rejected"));
-    actions.append(approve, reject);
-    li.append(name, actions);
-    box.append(li);
-  });
-}
-
-function renderRoom() {
-  renderPeople();
-  if (isHost) renderRequests();
-}
-
-async function decideMember(uid, decision) {
-  try {
-    await moderateMember({ roomId, memberUid: uid, decision });
-    message("roomMsg", decision === "approved" ? "Katılımcı onaylandı." : "Katılma isteği reddedildi.");
-  } catch (error) {
-    message("roomMsg", `İşlem başarısız: ${errorText(error)}`);
+    state.className = `person-state ${member.talking ? "on-air" : ""}`;
+    state.textContent = member.talking ? "KONUŞUYOR" : id === sessionId ? "BAĞLI" : peers.get(id)?.connected ? "BAĞLI" : "BAĞLANIYOR";
+    row.append(name, state);
+    list.append(row);
   }
+  $("peopleCount").textContent = `${online.length}/${MAX_PEOPLE}`;
+  const speakers = online.filter(([, member]) => member.talking).map(([, member]) => member.name);
+  $("speakerBanner").classList.toggle("hidden", speakers.length === 0);
+  say("speakerName", speakers.length ? `${speakers.join(", ")} konuşuyor` : "");
+  $("talkButton").disabled = !joined || !localTrack || online.length > MAX_PEOPLE;
 }
 
-function attachRemoteAudio(track, _publication, participant) {
-  if (track.kind !== liveKitSDK.Track.Kind.Audio) return;
-  const element = track.attach();
-  element.id = `audio-${participant.identity}`;
-  element.autoplay = true;
-  element.playsInline = true;
-  $("audioElements").append(element);
-  element.play().catch(() => {
-    $("enableAudioButton").classList.remove("hidden");
-    message("roomMsg", "Karşı tarafın sesini duymak için “Sesi etkinleştir” düğmesine dokunun.");
+function updateTopStatus(text, online = false) {
+  const badge = $("connectionStatus");
+  badge.textContent = text;
+  badge.classList.toggle("online", online);
+}
+
+async function sendSignal(toSession, kind, payload) {
+  await addDoc(inboxRef(toSession), {
+    fromSession: sessionId,
+    fromUid: user.uid,
+    toSession,
+    kind,
+    payload,
+    createdAt: serverTimestamp()
   });
 }
 
-function removeRemoteAudio(track) {
-  track.detach().forEach(element => element.remove());
-}
-
-function updateAudioPlaybackButton(room) {
-  $("enableAudioButton").classList.toggle("hidden", room.canPlaybackAudio);
-}
-
-async function connectVoice() {
-  if (!active || !memberApproved) return;
-  if (liveKitRoom && liveKitSDK && liveKitRoom.state === liveKitSDK.ConnectionState.Connected) return;
-  if (voiceConnectPromise) return voiceConnectPromise;
-  if (liveKitRoom) {
-    const staleRoom = liveKitRoom;
-    liveKitRoom = null;
-    await staleRoom.disconnect().catch(() => {});
-  }
-
-  voiceConnectPromise = (async () => {
-    setRoomState("SES BAĞLANIYOR");
-    $("talkButton").disabled = true;
-    $("retryVoiceButton").classList.add("hidden");
+function queueSignal(peer, signal) {
+  peer.signalQueue = peer.signalQueue.then(async () => {
     try {
-      const [sdk, response] = await Promise.all([
-        loadLiveKitSDK(),
-        issueRoomToken({ roomId })
-      ]);
-      if (!active || !memberApproved) return;
-
-      const room = new sdk.Room();
-      liveKitRoom = room;
-      room.on(sdk.RoomEvent.TrackSubscribed, attachRemoteAudio);
-      room.on(sdk.RoomEvent.TrackUnsubscribed, removeRemoteAudio);
-      room.on(sdk.RoomEvent.ParticipantConnected, renderPeople);
-      room.on(sdk.RoomEvent.ParticipantDisconnected, renderPeople);
-      room.on(sdk.RoomEvent.AudioPlaybackStatusChanged, () => updateAudioPlaybackButton(room));
-      room.on(sdk.RoomEvent.ConnectionStateChanged, state => {
-        if (state === sdk.ConnectionState.Connected) {
-          setRoomState("BAĞLI");
-          $("talkButton").disabled = false;
-          $("talkButton").querySelector("small").textContent = "Basılı tutarak konuş";
-          $("muteButton").disabled = false;
-          updateAudioPlaybackButton(room);
-        } else if (state === sdk.ConnectionState.Reconnecting) {
-          setRoomState("YENİDEN BAĞLANIYOR");
-          $("talkButton").disabled = true;
-          releaseTalk();
-        } else if (state === sdk.ConnectionState.Disconnected && active) {
-          setRoomState("SES BAĞLANTISI KESİLDİ");
-          $("talkButton").disabled = true;
-          $("retryVoiceButton").classList.remove("hidden");
-          releaseTalk();
-        }
-      });
-
-      await room.connect(response.data.serverUrl, response.data.token);
-      if (!active) {
-        await room.disconnect();
-        return;
-      }
-      setRoomState("BAĞLI");
-      $("talkButton").disabled = false;
-      $("talkButton").querySelector("small").textContent = "Basılı tutarak konuş";
-      $("muteButton").disabled = false;
-      updateAudioPlaybackButton(room);
-      renderPeople();
+      await handleSignal(peer, signal.data);
+      await deleteDoc(signal.ref);
     } catch (error) {
-      if (liveKitRoom) await liveKitRoom.disconnect().catch(() => {});
-      liveKitRoom = null;
-      setRoomState("SES BAĞLANTISI YOK");
-      $("talkButton").disabled = true;
-      $("retryVoiceButton").classList.remove("hidden");
-      message("roomMsg", `Ses bağlantısı kurulamadı: ${errorText(error)}`);
-      throw error;
+      console.warn("Sinyal işlenemedi", error);
+      say("radioMessage", "Bir bağlantı kurulamadı. Ağı değiştirip tekrar deneyin.");
     }
-  })();
+  });
+}
 
+async function handleSignal(peer, data) {
+  if (data.kind === "candidate") {
+    const candidate = JSON.parse(data.payload);
+    if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(candidate);
+    else peer.pendingCandidates.push(candidate);
+    return;
+  }
+
+  const description = JSON.parse(data.payload);
+  if (data.kind === "offer" && !peer.pc.remoteDescription) {
+    await peer.pc.setRemoteDescription(description);
+    const answer = await peer.pc.createAnswer();
+    await peer.pc.setLocalDescription(answer);
+    await sendSignal(peer.id, "answer", JSON.stringify(peer.pc.localDescription));
+    await addPendingCandidates(peer);
+  } else if (data.kind === "answer" && peer.pc.signalingState === "have-local-offer") {
+    await peer.pc.setRemoteDescription(description);
+    await addPendingCandidates(peer);
+  }
+}
+
+async function addPendingCandidates(peer) {
+  for (const candidate of peer.pendingCandidates.splice(0)) {
+    try { await peer.pc.addIceCandidate(candidate); } catch (error) { console.warn("ICE adayı eklenemedi", error); }
+  }
+}
+
+function receiveSignal(ref, data) {
+  const peer = peers.get(data.fromSession);
+  if (!peer) {
+    const queue = bufferedSignals.get(data.fromSession) || [];
+    queue.push({ ref, data });
+    bufferedSignals.set(data.fromSession, queue);
+    return;
+  }
+  queueSignal(peer, { ref, data });
+}
+
+async function startOffer(peer) {
+  if (peer.offerStarted || sessionId.localeCompare(peer.id) > 0) return;
+  peer.offerStarted = true;
   try {
-    await voiceConnectPromise;
-  } finally {
-    voiceConnectPromise = null;
+    const offer = await peer.pc.createOffer();
+    await peer.pc.setLocalDescription(offer);
+    await sendSignal(peer.id, "offer", JSON.stringify(peer.pc.localDescription));
+  } catch (error) {
+    console.warn("Teklif gönderilemedi", error);
   }
 }
 
-function listenForMembers() {
-  if (memberListUnsubscribe) return;
-  const source = isHost
-    ? membersRef()
-    : query(membersRef(), where("status", "==", "approved"));
-  memberListUnsubscribe = onSnapshot(source, snapshot => {
-    memberCache.clear();
-    snapshot.forEach(member => memberCache.set(member.id, { uid: member.id, ...member.data() }));
-    renderRoom();
-  }, error => message("roomMsg", `Katılımcı listesi okunamadı: ${errorText(error)}`));
-}
+function addPeer(id, member) {
+  if (peers.has(id) || !localStream || id === sessionId) return;
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const peer = {
+    id,
+    name: member.name,
+    pc,
+    connected: false,
+    offerStarted: false,
+    pendingCandidates: [],
+    signalQueue: Promise.resolve(),
+    audio: null
+  };
+  peers.set(id, peer);
+  for (const track of localStream.getAudioTracks()) pc.addTrack(track, localStream);
 
-async function handleOwnMembership(snapshot) {
-  if (!snapshot.exists()) {
-    if (memberApproved) {
-      await cleanup(false);
-      showWelcome("Oda üyeliğin sona erdi.");
+  pc.onicecandidate = event => {
+    if (event.candidate) {
+      sendSignal(id, "candidate", JSON.stringify(event.candidate.toJSON())).catch(() => {});
     }
-    return;
-  }
-  const status = snapshot.data().status;
-  if (status === "rejected") {
-    await cleanup(false);
-    showWelcome("Katılma isteğin reddedildi.");
-    return;
-  }
-  if (status !== "approved") {
-    memberApproved = false;
-    setRoomState("ONAY BEKLENİYOR");
-    $("talkButton").disabled = true;
-    message("roomMsg", "Oda sahibinin katılma isteğini onaylaması bekleniyor.");
-    return;
-  }
-
-  memberApproved = true;
-  listenForMembers();
-  if (!liveKitRoom && !voiceConnectPromise) connectVoice().catch(() => {});
-}
-
-function startRoomListeners() {
-  stopListeners();
-  roomUnsubscribe = onSnapshot(roomRef(), snapshot => {
-    if (!snapshot.exists() || snapshot.data().status === "closed") {
-      cleanup(false).then(() => showWelcome("Oda kapatıldı."));
+  };
+  pc.ontrack = event => {
+    const audio = document.createElement("audio");
+    audio.autoplay = true;
+    audio.playsInline = true;
+    audio.srcObject = event.streams[0] || new MediaStream([event.track]);
+    $("audioElements").append(audio);
+    peer.audio = audio;
+    audio.play().catch(() => $("enableAudioButton").classList.remove("hidden"));
+  };
+  pc.onconnectionstatechange = () => {
+    peer.connected = pc.connectionState === "connected";
+    renderMembers();
+    if (pc.connectionState === "failed") {
+      say("radioMessage", "Bir cihazla bağlantı kurulamadı. Bazı ağlarda TURN gerekebilir.");
     }
-  }, error => message("roomMsg", `Oda durumu okunamadı: ${errorText(error)}`));
-  ownMemberUnsubscribe = onSnapshot(memberRef(), snapshot => {
-    handleOwnMembership(snapshot).catch(error => message("roomMsg", errorText(error)));
-  }, error => message("roomMsg", `Üyelik durumu okunamadı: ${errorText(error)}`));
+  };
+
+  const waiting = bufferedSignals.get(id) || [];
+  bufferedSignals.delete(id);
+  waiting.forEach(signal => queueSignal(peer, signal));
+  startOffer(peer);
 }
 
-function syncMicState() {
-  if (!micTrack) return Promise.resolve();
-  const track = micTrack;
-  micOperation = micOperation.then(async () => {
-    if (track !== micTrack) return;
-    const shouldTransmit = active && memberApproved && talkPressed && !manuallyMuted &&
-      Boolean(liveKitRoom && liveKitSDK && liveKitRoom.state === liveKitSDK.ConnectionState.Connected);
-    if (shouldTransmit && track.isMuted) await track.unmute();
-    if (!shouldTransmit && !track.isMuted) await track.mute();
-  }).catch(error => message("roomMsg", `Mikrofon durumu değiştirilemedi: ${errorText(error)}`));
-  return micOperation;
+function closePeer(id) {
+  const peer = peers.get(id);
+  if (!peer) return;
+  peer.pc.onicecandidate = null;
+  peer.pc.ontrack = null;
+  peer.pc.close();
+  peer.audio?.remove();
+  peers.delete(id);
 }
 
-function releaseTalk() {
-  talkPressed = false;
-  $("talkButton").classList.remove("active");
-  $("talkButton").setAttribute("aria-pressed", "false");
-  $("talkButton").querySelector("small").textContent = manuallyMuted
-    ? "Mikrofon kapalı"
-    : "Basılı tutarak konuş";
-  syncMicState();
-}
+function watchChannel() {
+  membersUnsubscribe = onSnapshot(query(members, limit(MAX_PEOPLE + 5)), snapshot => {
+    memberCache = new Map(snapshot.docs.map(item => [item.id, item.data()]));
+    const onlineIds = new Set([...memberCache.entries()].filter(([, member]) => isFresh(member)).map(([id]) => id));
+    for (const [id, member] of memberCache) {
+      if (id !== sessionId && isFresh(member)) addPeer(id, member);
+    }
+    for (const id of peers.keys()) if (!onlineIds.has(id)) closePeer(id);
+    renderMembers();
+    updateTopStatus("KANALDA", true);
+  }, error => say("radioMessage", `Bağlantı koptu: ${error.message}`));
 
-async function startTalking(event) {
-  if (event && event.button !== undefined && event.button !== 0) return;
-  if (!active || !memberApproved || !liveKitRoom || !liveKitSDK ||
-      liveKitRoom.state !== liveKitSDK.ConnectionState.Connected || $("talkButton").disabled || talkPressed) return;
-  talkPressed = true;
-  $("talkButton").classList.add("active");
-  $("talkButton").setAttribute("aria-pressed", "true");
-  $("talkButton").querySelector("small").textContent = manuallyMuted ? "Mikrofon kapalı" : "KONUŞUYORSUN";
-  liveKitRoom.startAudio().catch(() => {});
-  if (manuallyMuted) {
-    message("roomMsg", "Konuşmak için önce mikrofon kilidini açın.");
-    return;
-  }
-
-  try {
-    if (!micTrack || micTrack.mediaStreamTrack.readyState === "ended") {
-      micTrack = await liveKitSDK.createLocalAudioTrack({
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      });
-      await micTrack.mute();
-      if (!talkPressed || manuallyMuted || !active) {
-        micTrack.stop();
-        micTrack = null;
-        return;
+  inboxUnsubscribe = onSnapshot(inboxRef(sessionId), snapshot => {
+    for (const change of snapshot.docChanges()) {
+      if (change.type === "added") {
+        receiveSignal(doc(db, "members", sessionId, "inbox", change.doc.id), change.doc.data());
       }
-      await liveKitRoom.localParticipant.publishTrack(micTrack, { source: liveKitSDK.Track.Source.Microphone });
     }
-    await syncMicState();
-  } catch (error) {
-    releaseTalk();
-    message("roomMsg", `Mikrofon açılamadı. HTTPS ve mikrofon iznini kontrol edin: ${errorText(error)}`);
-  }
+  }, error => say("radioMessage", `Sinyal bağlantısı koptu: ${error.message}`));
+
+  heartbeatTimer = setInterval(() => {
+    if (joined && ownMemberRef) updateDoc(ownMemberRef, { lastSeen: serverTimestamp() }).catch(() => {});
+  }, 15_000);
 }
 
-async function cleanup(redirect = true) {
-  if (cleanupPromise) return cleanupPromise;
-  cleanupPromise = (async () => {
-    active = false;
-    memberApproved = false;
-    talkPressed = false;
-    stopListeners();
-    if (liveKitRoom) {
-      const room = liveKitRoom;
-      liveKitRoom = null;
-      await room.disconnect().catch(() => {});
-    }
-    micTrack = null;
-    $("audioElements").replaceChildren();
-    $("talkButton").classList.remove("active");
-    $("talkButton").setAttribute("aria-pressed", "false");
-    if (redirect) location.href = location.pathname;
-  })();
+async function cleanStaleSessions() {
+  const cutoff = Timestamp.fromMillis(Date.now() - STALE_MS);
+  const stale = await getDocs(query(members, where("lastSeen", "<", cutoff)));
+  await Promise.all(stale.docs.map(item => deleteDoc(item.ref).catch(() => {})));
+}
+
+async function joinChannel() {
+  const name = validName($("nameInput").value);
+  if (!name) {
+    say("joinMessage", "Önce adını yaz.");
+    $("nameInput").focus();
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) {
+    say("joinMessage", "Bu tarayıcıda mikrofon veya WebRTC kullanılamıyor.");
+    return;
+  }
+
+  $("joinButton").disabled = true;
+  say("joinMessage", "Kanala bağlanıyor…");
   try {
-    await cleanupPromise;
+    user = (await signInAnonymously(auth)).user;
+    await cleanStaleSessions();
+    const current = await getDocs(query(members, limit(MAX_PEOPLE + 1)));
+    const onlineCount = current.docs.filter(item => isFresh(item.data())).length;
+    if (onlineCount >= MAX_PEOPLE) throw new Error("Kanal dolu; en fazla 10 kişi katılabilir.");
+
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false
+    });
+    localTrack = localStream.getAudioTracks()[0];
+    if (!localTrack) throw new Error("Mikrofon bulunamadı.");
+    localTrack.enabled = false;
+    sessionId = crypto.randomUUID();
+    ownMemberRef = sessionRef(sessionId);
+    await setDoc(ownMemberRef, {
+      uid: user.uid,
+      name,
+      joinedAt: serverTimestamp(),
+      lastSeen: serverTimestamp(),
+      talking: false
+    });
+
+    joined = true;
+    try { localStorage.setItem("telsiz-name", name); } catch {}
+    $("joinPanel").classList.add("hidden");
+    $("radioPanel").classList.remove("hidden");
+    say("radioMessage", "Hazır. Basılı tutup konuş.");
+    watchChannel();
+  } catch (error) {
+    localStream?.getTracks().forEach(track => track.stop());
+    localStream = null;
+    localTrack = null;
+    say("joinMessage", error.code === "permission-denied" ? "Mikrofon izni ver; sonra tekrar katıl." : error.message || "Kanala girilemedi.");
   } finally {
-    cleanupPromise = null;
+    $("joinButton").disabled = false;
   }
 }
 
-async function createRoom() {
-  if (!user) return;
-  displayName = cleanName($("displayName").value);
-  if (!displayName) return message("welcomeMsg", "Önce görünen adını yaz.");
-  const id = crypto.randomUUID().replaceAll("-", "").slice(0, 12).toUpperCase();
-  roomId = id;
-  isHost = true;
-  active = true;
-  manuallyMuted = false;
-  $("muteButton").textContent = "Mikrofonu kilitle";
-  try {
-    await setDoc(roomRef(), {
-      hostUid: user.uid,
-      status: "open",
-      createdAt: serverTimestamp(),
-      title: "EKİP ODASI"
-    });
-    await setDoc(memberRef(), {
-      name: displayName,
-      status: "approved",
-      joinedAt: serverTimestamp()
-    });
-    history.replaceState({}, "", `?room=${id}`);
-    showRoom();
-    startRoomListeners();
-    setRoomState("ODA AÇIK");
-    message("roomMsg", "Oda oluşturuldu. Davet bağlantısını ekibinle paylaşabilirsin.");
-  } catch (error) {
-    active = false;
-    isHost = false;
-    message("welcomeMsg", `Oda oluşturulamadı: ${errorText(error)}`);
-  }
+function setTalking(value) {
+  if (!joined || !localTrack || talking === value) return;
+  talking = value;
+  localTrack.enabled = value;
+  $("talkButton").classList.toggle("pressed", value);
+  $("talkButton").setAttribute("aria-pressed", String(value));
+  say("talkLabel", value ? "KONUŞUYORSUN" : "BASILI TUT, KONUŞ");
+  updateDoc(ownMemberRef, { talking: value, lastSeen: serverTimestamp() }).catch(() => {});
+  renderMembers();
 }
 
-async function requestJoin() {
-  if (!user) return;
-  displayName = cleanName($("displayName").value);
-  const id = inviteCode($("inviteCode").value || inviteFromUrl);
-  if (!displayName) return message("welcomeMsg", "Önce görünen adını yaz.");
-  if (!/^[A-Z0-9]{12}$/.test(id)) return message("welcomeMsg", "12 karakterli geçerli davet kodunu gir.");
-  roomId = id;
-  manuallyMuted = false;
-  $("muteButton").textContent = "Mikrofonu kilitle";
-  try {
-    const roomSnapshot = await getDoc(roomRef());
-    if (!roomSnapshot.exists() || roomSnapshot.data().status !== "open") {
-      return message("welcomeMsg", "Bu oda bulunamadı veya kapatılmış.");
-    }
-    isHost = roomSnapshot.data().hostUid === user.uid;
-    const existingMember = await getDoc(memberRef());
-    if (existingMember.exists() && existingMember.data().status === "rejected") {
-      await deleteDoc(memberRef());
-    }
-    const refreshedMember = existingMember.exists() && existingMember.data().status !== "rejected"
-      ? existingMember
-      : null;
-    if (refreshedMember) {
-      if (refreshedMember.data().name !== displayName) await updateDoc(memberRef(), { name: displayName });
-    } else {
-      await setDoc(memberRef(), {
-        name: displayName,
-        status: isHost ? "approved" : "pending",
-        joinedAt: serverTimestamp()
-      });
-    }
-    active = true;
-    history.replaceState({}, "", `?room=${id}`);
-    showRoom();
-    startRoomListeners();
-    message("roomMsg", "Katılma isteğin gönderildi.");
-  } catch (error) {
-    message("welcomeMsg", `Katılma isteği gönderilemedi: ${errorText(error)}`);
+async function leaveChannel() {
+  setTalking(false);
+  joined = false;
+  clearInterval(heartbeatTimer);
+  membersUnsubscribe?.();
+  inboxUnsubscribe?.();
+  for (const id of [...peers.keys()]) closePeer(id);
+  localStream?.getTracks().forEach(track => track.stop());
+  localStream = null;
+  localTrack = null;
+  if (sessionId) {
+    const pending = await getDocs(inboxRef(sessionId)).catch(() => null);
+    if (pending) await Promise.all(pending.docs.map(item => deleteDoc(item.ref).catch(() => {})));
   }
+  if (ownMemberRef) await deleteDoc(ownMemberRef).catch(() => {});
+  ownMemberRef = null;
+  memberCache.clear();
+  bufferedSignals.clear();
+  $("audioElements").replaceChildren();
+  $("joinPanel").classList.remove("hidden");
+  $("radioPanel").classList.add("hidden");
+  $("enableAudioButton").classList.add("hidden");
+  say("radioMessage", "");
+  say("joinMessage", "Kanaldan ayrıldın.");
+  updateTopStatus("HAZIR");
 }
 
-async function closeRoom() {
-  if (!isHost) return;
-  try {
-    await updateDoc(roomRef(), { status: "closed", closedAt: serverTimestamp() });
-    await cleanup(false);
-    showWelcome("Oda kapatıldı.");
-  } catch (error) {
-    message("roomMsg", `Oda kapatılamadı: ${errorText(error)}`);
-  }
-}
-
-async function leaveRoom() {
-  if (!active) return;
-  if (isHost) return closeRoom();
-  await cleanup(false);
-  try { await deleteDoc(memberRef()); } catch (error) { console.warn("Could not remove membership", error); }
-  showWelcome("Odadan ayrıldın.");
-}
-
-$("createRoom").addEventListener("click", createRoom);
-$("requestJoin").addEventListener("click", requestJoin);
-$("copyInvite").addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText($("inviteText").textContent);
-    $("copyInvite").textContent = "KOPYALANDI";
-  } catch {
-    message("roomMsg", "Bağlantı kopyalanamadı; adres çubuğundan kopyalayın.");
-  }
-});
-$("leaveButton").addEventListener("click", leaveRoom);
-$("closeRoom").addEventListener("click", closeRoom);
-$("muteButton").addEventListener("click", () => {
-  manuallyMuted = !manuallyMuted;
-  $("muteButton").textContent = manuallyMuted ? "Mikrofon kilidini aç" : "Mikrofonu kilitle";
-  if (manuallyMuted) releaseTalk();
-  syncMicState();
-});
-$("enableAudioButton").addEventListener("click", async () => {
-  if (!liveKitRoom) return;
-  try {
-    await liveKitRoom.startAudio();
-    $("enableAudioButton").classList.add("hidden");
-    message("roomMsg", "Ses etkinleştirildi.");
-  } catch (error) {
-    message("roomMsg", `Ses etkinleştirilemedi: ${errorText(error)}`);
-  }
-});
-$("retryVoiceButton").addEventListener("click", () => connectVoice().catch(() => {}));
-
-const talkButton = $("talkButton");
-talkButton.addEventListener("pointerdown", event => {
+$("joinButton").addEventListener("click", joinChannel);
+$("nameInput").addEventListener("keydown", event => { if (event.key === "Enter") joinChannel(); });
+$("leaveButton").addEventListener("click", leaveChannel);
+$("talkButton").addEventListener("pointerdown", event => {
+  if (event.button !== 0) return;
   event.preventDefault();
-  if (event.isPrimary) talkButton.setPointerCapture?.(event.pointerId);
-  startTalking(event);
+  try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+  setTalking(true);
 });
-["pointerup", "pointercancel", "lostpointercapture"].forEach(eventName =>
-  talkButton.addEventListener(eventName, releaseTalk));
-talkButton.addEventListener("keydown", event => {
-  if ((event.code === "Space" || event.code === "Enter") && !event.repeat) {
-    event.preventDefault();
-    startTalking();
-  }
+["pointerup", "pointercancel", "lostpointercapture", "pointerleave"].forEach(type => {
+  $("talkButton").addEventListener(type, () => setTalking(false));
 });
-talkButton.addEventListener("keyup", event => {
-  if (event.code === "Space" || event.code === "Enter") releaseTalk();
+$("talkButton").addEventListener("contextmenu", event => event.preventDefault());
+$("enableAudioButton").addEventListener("click", async () => {
+  for (const peer of peers.values()) await peer.audio?.play().catch(() => {});
+  $("enableAudioButton").classList.add("hidden");
 });
-window.addEventListener("blur", releaseTalk);
-document.addEventListener("visibilitychange", () => { if (document.hidden) releaseTalk(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) setTalking(false); });
+window.addEventListener("blur", () => setTalking(false));
+window.addEventListener("pagehide", () => {
+  if (sessionId) getDocs(inboxRef(sessionId)).then(snapshot => Promise.all(snapshot.docs.map(item => deleteDoc(item.ref)))).catch(() => {});
+  if (ownMemberRef) deleteDoc(ownMemberRef).catch(() => {});
+  for (const peer of peers.values()) peer.pc.close();
+  localStream?.getTracks().forEach(track => track.stop());
+});
 
-if (inviteFromUrl) $("inviteCode").value = inviteCode(inviteFromUrl);
-
-(async () => {
-  try {
-    const credential = await signInAnonymously(auth);
-    user = credential.user;
-    $("createRoom").disabled = false;
-    $("requestJoin").disabled = false;
-    message("welcomeMsg", "Bağlantı hazır. Bir oda oluştur veya davet koduyla katıl.");
-  } catch (error) {
-    message("welcomeMsg", `Firebase kimlik doğrulaması başarısız: ${errorText(error)}`);
-    $("createRoom").disabled = true;
-    $("requestJoin").disabled = true;
-  }
-})();
-
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
-}
+try { $("nameInput").value = localStorage.getItem("telsiz-name") || ""; } catch {}
+if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));

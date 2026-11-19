@@ -1,91 +1,69 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
+    function anonymous() {
       return request.auth != null &&
         request.auth.token.firebase.sign_in_provider == 'anonymous';
     }
 
-    function roomPath(roomId) {
-      return /databases/$(database)/documents/rooms/$(roomId);
+    function memberPath(sessionId) {
+      return /databases/$(database)/documents/members/$(sessionId);
     }
 
-    function memberPath(roomId, uid) {
-      return /databases/$(database)/documents/rooms/$(roomId)/members/$(uid);
+    function ownSession(sessionId) {
+      return anonymous() && exists(memberPath(sessionId)) &&
+        get(memberPath(sessionId)).data.uid == request.auth.uid;
     }
 
-    function roomExists(roomId) {
-      return exists(roomPath(roomId));
-    }
-
-    function isHost(roomId) {
-      return signedIn() && roomExists(roomId) &&
-        get(roomPath(roomId)).data.hostUid == request.auth.uid;
-    }
-
-    function isApproved(roomId, uid) {
-      return signedIn() && exists(memberPath(roomId, uid)) &&
-        get(memberPath(roomId, uid)).data.status == 'approved';
-    }
-
-    function hasActiveMembership(roomId, uid) {
-      return signedIn() && exists(memberPath(roomId, uid)) &&
-        get(memberPath(roomId, uid)).data.status in ['pending', 'approved'];
-    }
-
-    function roomOpen(roomId) {
-      return roomExists(roomId) && get(roomPath(roomId)).data.status == 'open';
-    }
-
-    function validMemberName(name) {
+    function validName(name) {
       return name is string && name.size() > 0 && name.size() <= 24;
     }
 
-    match /rooms/{roomId} {
-      allow create: if signedIn() && roomId.matches('^[A-Z0-9]{12}$') &&
-        request.resource.data.keys().hasAll(['hostUid', 'status', 'createdAt', 'title']) &&
-        request.resource.data.keys().hasOnly(['hostUid', 'status', 'createdAt', 'title']) &&
-        request.resource.data.hostUid == request.auth.uid &&
-        request.resource.data.status == 'open' &&
-        request.resource.data.createdAt is timestamp &&
-        request.resource.data.title == 'EKİP ODASI';
+    match /members/{sessionId} {
+      allow get, list: if anonymous();
 
-      allow get: if signedIn() &&
-        (resource.data.hostUid == request.auth.uid ||
-         resource.data.status == 'open' ||
-         hasActiveMembership(roomId, request.auth.uid));
-      allow list: if false;
+      allow create: if anonymous() && sessionId.matches('^[A-Za-z0-9-]{8,64}$') &&
+        request.resource.data.keys().hasAll(['uid', 'name', 'joinedAt', 'lastSeen', 'talking']) &&
+        request.resource.data.keys().hasOnly(['uid', 'name', 'joinedAt', 'lastSeen', 'talking']) &&
+        request.resource.data.uid == request.auth.uid &&
+        validName(request.resource.data.name) &&
+        request.resource.data.joinedAt == request.time &&
+        request.resource.data.lastSeen == request.time &&
+        request.resource.data.talking == false;
 
-      allow update: if isHost(roomId) && resource.data.status == 'open' &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'closedAt']) &&
-        request.resource.data.status == 'closed' &&
-        request.resource.data.closedAt == request.time;
-      allow delete: if false;
+      allow update: if ownSession(sessionId) &&
+        request.resource.data.keys().hasOnly(['uid', 'name', 'joinedAt', 'lastSeen', 'talking']) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'lastSeen', 'talking']) &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.joinedAt == resource.data.joinedAt &&
+        request.resource.data.lastSeen == request.time &&
+        validName(request.resource.data.name) &&
+        request.resource.data.talking is bool;
 
-      match /members/{uid} {
-        allow create: if signedIn() && request.auth.uid == uid && roomOpen(roomId) &&
-          request.resource.data.keys().hasAll(['name', 'status', 'joinedAt']) &&
-          request.resource.data.keys().hasOnly(['name', 'status', 'joinedAt']) &&
-          validMemberName(request.resource.data.name) &&
-          request.resource.data.joinedAt is timestamp &&
-          (request.resource.data.status == 'pending' ||
-           (request.resource.data.status == 'approved' && isHost(roomId)));
+      allow delete: if anonymous() && (
+        resource.data.uid == request.auth.uid ||
+        (resource.data.lastSeen is timestamp &&
+         resource.data.lastSeen < request.time - duration.value(45, 's'))
+      );
 
-        allow get: if signedIn() &&
-          (request.auth.uid == uid || isHost(roomId) ||
-           (isApproved(roomId, request.auth.uid) && resource.data.status == 'approved'));
-        allow list: if signedIn() &&
-          (isHost(roomId) ||
-           (isApproved(roomId, request.auth.uid) && resource.data.status == 'approved'));
+      match /inbox/{signalId} {
+        allow get, list, delete: if ownSession(sessionId);
 
-        // Approval and rejection run through an authenticated Cloud Function so
-        // capacity checks and host verification stay on the server.
-        allow update: if signedIn() && request.auth.uid == uid &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name']) &&
-          request.resource.data.status == resource.data.status &&
-          validMemberName(request.resource.data.name);
+        allow create: if anonymous() &&
+          request.resource.data.keys().hasAll(['fromSession', 'fromUid', 'toSession', 'kind', 'payload', 'createdAt']) &&
+          request.resource.data.keys().hasOnly(['fromSession', 'fromUid', 'toSession', 'kind', 'payload', 'createdAt']) &&
+          request.resource.data.fromSession is string &&
+          request.resource.data.fromSession != sessionId &&
+          ownSession(request.resource.data.fromSession) &&
+          request.resource.data.fromUid == request.auth.uid &&
+          request.resource.data.toSession == sessionId &&
+          exists(memberPath(sessionId)) &&
+          request.resource.data.kind in ['offer', 'answer', 'candidate'] &&
+          request.resource.data.payload is string &&
+          request.resource.data.payload.size() <= 12000 &&
+          request.resource.data.createdAt == request.time;
 
-        allow delete: if signedIn() && (request.auth.uid == uid || isHost(roomId));
+        allow update: if false;
       }
     }
   }
