@@ -154,6 +154,7 @@ function startRoomListeners() {
       return;
     }
     setRoomState("BAĞLI");
+    $("talkButton").disabled = false;
     if (!unsubSignals) {
       const incoming = query(signalsRef(), where("to", "==", user.uid), limit(100));
       unsubSignals = onSnapshot(incoming, snap => {
