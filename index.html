@@ -6,8 +6,11 @@
   <meta name="theme-color" content="#101827">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TELSİZ">
+  <meta name="description" content="Ekibinle güvenli ve canlı sesli iletişim kur.">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
   <title>TELSİZ</title>
-  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -23,11 +26,11 @@
       <p class="muted">Oda oluştur veya ekip arkadaşından gelen davet bağlantısıyla katıl.</p>
       <label for="displayName">Görünen adın</label>
       <input id="displayName" maxlength="24" placeholder="Örn. Ahmet" autocomplete="nickname">
-      <button id="createRoom" class="primary">＋ Yeni oda oluştur</button>
+      <button id="createRoom" class="primary" disabled>＋ Yeni oda oluştur</button>
       <div class="separator"><span>veya</span></div>
       <label for="inviteCode">Davet kodu</label>
       <input id="inviteCode" maxlength="12" placeholder="Oda kodunu gir">
-      <button id="requestJoin" class="secondary">Katılma isteği gönder</button>
+      <button id="requestJoin" class="secondary" disabled>Katılma isteği gönder</button>
       <p id="welcomeMsg" class="message" aria-live="polite"></p>
     </section>
 
@@ -47,15 +50,20 @@
         <ul id="requests"></ul>
       </div>
       <div class="talk-area">
-        <button id="talkButton" class="talk" disabled><span>🎙</span><b>BAS VE KONUŞ</b><small>Mikrofon bağlantısı kuruluyor</small></button>
-        <p id="talkHint" class="muted">Mikrofon izni gerektiğinde tarayıcı tarafından istenir.</p>
+        <button id="talkButton" class="talk" type="button" aria-pressed="false" disabled><span>🎙</span><b>BAS VE KONUŞ</b><small>Mikrofon bağlantısı kuruluyor</small></button>
+        <p id="talkHint" class="muted">Mikrofon yalnızca konuşma düğmesine basılıyken gönderilir.</p>
+      </div>
+      <div class="audio-actions">
+        <button id="enableAudioButton" class="secondary hidden" type="button">Sesi etkinleştir</button>
+        <button id="retryVoiceButton" class="secondary hidden" type="button">Ses bağlantısını yenile</button>
       </div>
       <div class="room-actions">
-        <button id="muteButton" class="secondary" disabled>Mikrofonu kapat</button>
+        <button id="muteButton" class="secondary" disabled>Mikrofonu kilitle</button>
         <button id="leaveButton" class="danger">Odadan ayrıl</button>
       </div>
       <button id="closeRoom" class="close-room hidden">Odayı kapat (yalnızca oda sahibi)</button>
       <p id="roomMsg" class="message" aria-live="polite"></p>
+      <div id="audioElements" class="audio-elements" aria-hidden="true"></div>
     </section>
     <footer>Ses kaydı yapılmaz. İnternet bağlantısı gerekir.</footer>
   </main>

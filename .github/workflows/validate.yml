@@ -5,16 +5,25 @@ on:
   pull_request:
     branches: [main]
 jobs:
-  static-checks:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - name: Check JavaScript syntax
-        run: node --check app.js
-      - name: Validate web manifest
-        run: node -e "JSON.parse(require('fs').readFileSync('manifest.webmanifest','utf8'))"
-      - name: Check required files
-        run: test -s index.html && test -s style.css && test -s sw.js && test -s firestore.rules
+          node-version: 24.12.0
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Install function dependencies
+        run: npm ci --prefix functions
+      - name: Validate syntax, PWA files, and build
+        run: node --check app.js && node --check functions/index.js && npm run test:static && npm run build && npm run test:build
+      - name: Validate and test Cloud Functions
+        run: npm run lint --prefix functions && npm test --prefix functions
+      - name: Run Firestore Rules tests in the Emulator
+        run: npm run test:rules

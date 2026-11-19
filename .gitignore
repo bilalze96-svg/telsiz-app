@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.local
+functions/.env
+functions/.env.local
+functions/.env.*
+!functions/.env.example
+functions/.secret.local
+.firebase/
+functions/lib/
+firebase-debug.log
+firestore-debug.log
