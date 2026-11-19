@@ -16,6 +16,10 @@ service cloud.firestore {
     function roomOpen(roomId) {
       return roomExists(roomId) && get(roomPath(roomId)).data.status == 'open';
     }
+    function isPending(roomId, uid) {
+      return signedIn() && exists(memberPath(roomId, uid)) &&
+        get(memberPath(roomId, uid)).data.status == 'pending';
+    }
 
     match /rooms/{roomId} {
       allow create: if signedIn() &&
@@ -39,7 +43,8 @@ service cloud.firestore {
           (request.resource.data.status == 'pending' ||
             (request.resource.data.status == 'approved' && isHost(roomId)));
         allow get, list: if signedIn() &&
-          (request.auth.uid == uid || isHost(roomId) || isApproved(roomId, request.auth.uid));
+          (request.auth.uid == uid || isHost(roomId) ||
+           isApproved(roomId, request.auth.uid) || isPending(roomId, request.auth.uid));
         allow update: if signedIn() &&
           ((isHost(roomId) &&
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','approvedAt']) &&
