@@ -36,11 +36,32 @@ let membersUnsubscribe = null;
 let inboxUnsubscribe = null;
 let heartbeatTimer = null;
 let joined = false;
+let channelSnapshotInitialized = false;
+let talkToastTimer = null;
 
 function say(id, text) { $(id).textContent = text; }
 function validName(value) { return value.trim().replace(/[<>]/g, "").replace(/\s+/g, " ").slice(0, 24); }
 function sessionRef(id) { return doc(db, "members", id); }
 function inboxRef(id) { return collection(db, "members", id, "inbox"); }
+function announceTalkers(names) {
+  const toast = $("talkToast");
+  const message = names.length === 1
+    ? `${names[0]} konuşmaya başladı`
+    : `${names.join(", ")} konuşmaya başladı`;
+  toast.textContent = `📻 ${message}`;
+  toast.classList.remove("hidden");
+  clearTimeout(talkToastTimer);
+  talkToastTimer = setTimeout(() => toast.classList.add("hidden"), 3200);
+  if (typeof navigator.vibrate === "function") navigator.vibrate(120);
+}
+
+function notifyNewTalkers(previous, current) {
+  const names = [...current.entries()]
+    .filter(([id, member]) => id !== sessionId && isFresh(member) && member.talking && !previous.get(id)?.talking)
+    .map(([, member]) => member.name);
+  if (names.length) announceTalkers(names);
+}
+
 function isFresh(member) {
   const seenAt = member.lastSeen?.toDate?.().getTime();
   return Number.isFinite(seenAt) && Date.now() - seenAt < STALE_MS;
@@ -203,8 +224,13 @@ function closePeer(id) {
 }
 
 function watchChannel() {
+  channelSnapshotInitialized = false;
   membersUnsubscribe = onSnapshot(query(members, limit(MAX_PEOPLE + 5)), snapshot => {
-    memberCache = new Map(snapshot.docs.map(item => [item.id, item.data()]));
+    const previousMembers = memberCache;
+    const nextMembers = new Map(snapshot.docs.map(item => [item.id, item.data()]));
+    if (channelSnapshotInitialized) notifyNewTalkers(previousMembers, nextMembers);
+    channelSnapshotInitialized = true;
+    memberCache = nextMembers;
     const onlineIds = new Set([...memberCache.entries()].filter(([, member]) => isFresh(member)).map(([id]) => id));
     for (const [id, member] of memberCache) {
       if (id !== sessionId && isFresh(member)) addPeer(id, member);
@@ -315,7 +341,10 @@ async function leaveChannel() {
   if (ownMemberRef) await deleteDoc(ownMemberRef).catch(() => {});
   ownMemberRef = null;
   memberCache.clear();
+  channelSnapshotInitialized = false;
   bufferedSignals.clear();
+  clearTimeout(talkToastTimer);
+  $("talkToast").classList.add("hidden");
   $("audioElements").replaceChildren();
   $("joinPanel").classList.remove("hidden");
   $("radioPanel").classList.add("hidden");

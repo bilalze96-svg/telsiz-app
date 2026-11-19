@@ -12,6 +12,8 @@ test("production build includes the fixed-channel push-to-talk app without LiveK
   const javascript = await readFile(new URL(`assets/${bundle}`, dist), "utf8");
   const html = await readFile(new URL("index.html", dist), "utf8");
   assert.ok(javascript.includes("stun:stun.l.google.com:19302"), "direct WebRTC uses a STUN server");
+  assert.ok(javascript.includes("konuşmaya başladı"), "incoming talk starts trigger a notification");
   assert.ok(html.includes("BASILI TUT, KONUŞ"), "page contains the push-to-talk control");
   assert.ok(html.includes("GENEL KANAL"), "page contains the shared fixed channel");
+  assert.ok(html.includes('id="talkToast"'), "page contains the accessible talk notification");
 });

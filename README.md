@@ -7,9 +7,10 @@ Tek sabit bağlantı, tek genel kanal: adını yazıp gir, basılı tutup konuş
 - Firebase Anonymous Authentication isimsiz oturum açar; Firestore kanaldaki kişileri ve WebRTC bağlantı sinyallerini taşır.
 - Ses, tarayıcılar arasında doğrudan WebRTC ile gider. Ses kaydı ve sohbet yoktur.
 - Konuşmak için düğmeyi basılı tut; bırakınca mikrofon sessize alınır.
+- Kanal açıkken biri konuşmaya başlayınca kısa bir ekran bildirimi çıkar; cihaz destekliyorsa hafif titreşim verir.
 - Arayüz en fazla 10 kişi gösterir. Bu basit sürümde sayı sunucu tarafında zorlanmaz.
 - Yalnızca STUN kullanılır, TURN yoktur. Bazı mobil veya kurumsal ağlarda bağlantı kurulamaması mümkündür. Acil iletişim için kullanmayın.
-- iPhone’da Safari ile açın ve mikrofon izni verin. Ana ekrana ekleyerek PWA gibi kullanabilirsiniz. Arka planda çalışması garanti edilmez.
+- iPhone’da Safari ile açın ve mikrofon izni verin. Ana ekrana ekleyerek PWA gibi kullanabilirsiniz. Arka planda çalışması ve uygulama kapalıyken bildirim gelmesi garanti edilmez.
 
 ## Proje
 
