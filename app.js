@@ -100,7 +100,9 @@ function makePeer(remoteUid) {
   if (peers.has(remoteUid)) return peers.get(remoteUid);
   const pc = new RTCPeerConnection(rtcConfig);
   peers.set(remoteUid, pc);
-  if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  const audioTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
+  pc._audioSender = audioTransceiver.sender;
+  if (localStream) audioTransceiver.sender.replaceTrack(localStream.getAudioTracks()[0]).catch(console.error);
   pc.onicecandidate = e => { if (e.candidate) sendSignal(remoteUid, "candidate", e.candidate.toJSON()).catch(console.error); };
   pc.ontrack = e => {
     let audio = document.getElementById("audio-" + remoteUid);
@@ -206,7 +208,7 @@ async function requestJoin() {
     const room = await getDoc(roomRef());
     if (!room.exists() || room.data().status !== "open") return message("welcomeMsg", "Bu oda bulunamadı veya kapatılmış.");
     await setDoc(memberRef(), { name: displayName, status: "pending", joinedAt: serverTimestamp() });
-    showRoom(); history.replaceState({}, "", "?room=" + id); startRoomListeners();
+    active = true; showRoom(); history.replaceState({}, "", "?room=" + id); startRoomListeners();
     setRoomState("ONAY BEKLENİYOR");
     message("roomMsg", "Katılma isteğin oda sahibine gönderildi.");
   } catch (e) { message("welcomeMsg", "Katılma isteği gönderilemedi: " + e.message); }
@@ -217,7 +219,7 @@ async function startTalking() {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       localStream.getTracks().forEach(track => { track.enabled = true; });
-      for (const [uid, pc] of peers) if (pc.getSenders().every(s => s.track?.kind !== "audio")) pc.addTrack(localStream.getAudioTracks()[0], localStream);
+      for (const [, pc] of peers) if (pc._audioSender) await pc._audioSender.replaceTrack(localStream.getAudioTracks()[0]);
     } catch (e) { return message("roomMsg", "Mikrofon açılamadı. HTTPS ve mikrofon iznini kontrol edin: " + e.message); }
   }
   localStream.getAudioTracks().forEach(t => t.enabled = true);
