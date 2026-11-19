@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101827">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>TELSİZ</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-icon">◉</span><div><b>TELSİZ</b><small>EKİP İLETİŞİMİ</small></div></div>
+      <span class="status"><i></i> HAZIR</span>
+    </header>
+
+    <section id="welcome" class="panel">
+      <div class="eyebrow">GÜVENLİ EKİP KANALI</div>
+      <h1>Ekibinle<br><em>anında konuş.</em></h1>
+      <p class="muted">Oda oluştur veya ekip arkadaşından gelen davet bağlantısıyla katıl.</p>
+      <label for="displayName">Görünen adın</label>
+      <input id="displayName" maxlength="24" placeholder="Örn. Ahmet" autocomplete="nickname">
+      <button id="createRoom" class="primary">＋ Yeni oda oluştur</button>
+      <div class="separator"><span>veya</span></div>
+      <label for="inviteCode">Davet kodu</label>
+      <input id="inviteCode" maxlength="12" placeholder="Oda kodunu gir">
+      <button id="requestJoin" class="secondary">Katılma isteği gönder</button>
+      <p id="welcomeMsg" class="message" aria-live="polite"></p>
+    </section>
+
+    <section id="room" class="panel hidden">
+      <div class="room-head">
+        <div><div class="eyebrow">AKTİF KANAL</div><h2 id="roomName">EKİP ODASI</h2></div>
+        <span id="roomState" class="pill">BAĞLANIYOR</span>
+      </div>
+      <div class="invite">
+        <div><small>DAVET BAĞLANTISI</small><b id="inviteText">—</b></div>
+        <button id="copyInvite" class="copy">KOPYALA</button>
+      </div>
+      <div class="people-head"><b>Katılımcılar</b><span id="peopleCount">0 kişi</span></div>
+      <ul id="people" class="people"></ul>
+      <div id="requestsBox" class="requests hidden">
+        <div class="people-head"><b>Katılma istekleri</b><span>Oda sahibi</span></div>
+        <ul id="requests"></ul>
+      </div>
+      <div class="talk-area">
+        <button id="talkButton" class="talk" disabled><span>🎙</span><b>BAS VE KONUŞ</b><small>Mikrofon bağlantısı kuruluyor</small></button>
+        <p id="talkHint" class="muted">Mikrofon izni gerektiğinde tarayıcı tarafından istenir.</p>
+      </div>
+      <div class="room-actions">
+        <button id="muteButton" class="secondary" disabled>Mikrofonu kapat</button>
+        <button id="leaveButton" class="danger">Odadan ayrıl</button>
+      </div>
+      <button id="closeRoom" class="close-room hidden">Odayı kapat (yalnızca oda sahibi)</button>
+      <p id="roomMsg" class="message" aria-live="polite"></p>
+    </section>
+    <footer>Ses kaydı yapılmaz. İnternet bağlantısı gerekir.</footer>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
