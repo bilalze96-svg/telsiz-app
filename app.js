@@ -24,7 +24,7 @@ const db = getFirestore(appInstance);
 const rtcConfig = { iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }] };
 
 let user = null, roomId = "", displayName = "", isHost = false, localStream = null;
-let unsubscribers = [], peers = new Map(), memberCache = new Map(), active = false;
+let unsubscribers = [], unsubSignals = null, peers = new Map(), memberCache = new Map(), active = false;
 
 function message(id, text) { $(id).textContent = text; }
 function setRoomState(text) { $("roomState").textContent = text; }
@@ -37,6 +37,7 @@ function cleanName(value) { return value.trim().replace(/[<>]/g, "").slice(0, 24
 function stopListeners() {
   unsubscribers.forEach(fn => fn());
   unsubscribers = [];
+  if (unsubSignals) { unsubSignals(); unsubSignals = null; }
 }
 async function closePeers() {
   for (const [, pc] of peers) pc.close();
@@ -153,6 +154,17 @@ function startRoomListeners() {
       return;
     }
     setRoomState("BAĞLI");
+    if (!unsubSignals) {
+      const incoming = query(signalsRef(), where("to", "==", user.uid), limit(100));
+      unsubSignals = onSnapshot(incoming, snap => {
+        snap.docChanges().forEach(change => {
+          if (change.type === "added") {
+            const data = change.doc.data();
+            handleSignal(data).finally(() => deleteDoc(change.doc.ref).catch(() => {}));
+          }
+        });
+      }, e => message("roomMsg", "Ses sinyalleşmesi okunamadı: " + e.message));
+    }
     for (const [uid, m] of memberCache) {
       if (uid !== user.uid && m.status === "approved") makePeer(uid);
     }
@@ -163,15 +175,6 @@ function startRoomListeners() {
       }
     }
   }, e => message("roomMsg", "Katılımcılar okunamadı: " + e.message)));
-  const incoming = query(signalsRef(), where("to", "==", user.uid), limit(100));
-  unsubscribers.push(onSnapshot(incoming, snap => {
-    snap.docChanges().forEach(change => {
-      if (change.type === "added") {
-        const data = change.doc.data();
-        handleSignal(data).finally(() => deleteDoc(change.doc.ref).catch(() => {}));
-      }
-    });
-  }, e => message("roomMsg", "Ses sinyalleşmesi okunamadı: " + e.message)));
   unsubscribers.push(onSnapshot(roomRef(), snap => {
     if (!snap.exists() || snap.data().status === "closed") {
       message("roomMsg", "Oda sahibi odayı kapattı.");
