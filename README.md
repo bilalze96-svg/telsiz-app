@@ -1,29 +1,27 @@
-# TELSİZ — web uygulaması başlangıç paketi
+# TELSİZ
 
-## Önemli durum
-Bu paket, TELSİZ'in mobil uyumlu arayüzünü ve PWA kabuğunu içerir. **Henüz gerçek odalar, davet onayı veya kişiler arası ses aktarımı çalışır durumda değildir.** Bu özellikleri güvenli biçimde açmak için Firebase projesi (kimlik doğrulama + Firestore sinyalleşme) ve WebRTC bağlantı kurulumu gerekir.
+Mobil uyumlu, Firebase tabanlı ekip ses odası prototipi.
 
-## Mimari
-- İstemci: HTML, CSS, JavaScript (PWA)
-- Oda/katılma talepleri: Firebase Authentication (anonim) + Firestore
-- Canlı ses: WebRTC, ses kaydı olmadan
-- 5–10 katılımcı: küçük ekip için mesh bağlantısı denenebilir; mobil ağlarda TURN servisi gerekebilir.
-- Üretim ortamı: HTTPS zorunludur.
+## Bu sürümde
+- Firebase anonim oturum açma
+- Oda oluşturma ve paylaşılabilir davet bağlantısı
+- Odaya katılma isteği ve oda sahibinin onay/red işlemi
+- Onaylı katılımcılar arasında WebRTC ses aktarımı (mesh)
+- Basılı tutarak konuşma; kayıt özelliği yok
+- iPhone Safari için PWA kabuğu
 
-## Çalıştırma
-Dosyaları HTTPS destekleyen bir statik barındırma hizmetine yükleyin. Yerelde test için bir statik sunucu kullanın; `file://` ile açmayın.
+## Firebase kurulumu
+Firebase projesi: `telsiz-app-88ecf`
+1. Authentication > Sign-in method > Anonymous açık olmalı.
+2. Firestore Database oluşturulmuş olmalı.
+3. Firestore Rules ekranına bu depodaki `firestore.rules` dosyasının içeriğini yapıştırıp Publish edin.
+4. GitHub Pages veya başka bir HTTPS statik barındırma sağlayıcısı üzerinden yayınlayın.
 
-## Gerekli sonraki adım
-1. Firebase Console'da proje oluşturun.
-2. Authentication > Sign-in method bölümünde Anonymous girişini açın.
-3. Firestore Database oluşturun.
-4. Web uygulaması kaydedip Firebase web config değerlerini alın.
-5. `app.js` içindeki `firebaseConfig` alanlarına gerçek değerleri yerleştirin.
-6. Firestore güvenlik kuralları; oda sahibi, bekleyen katılımcı ve onaylanmış katılımcı rollerini doğrulayacak şekilde yazılmalı. Şu anki kurallar bilerek tüm erişimi kapatır.
-7. Ardından oda oluşturma, katılma isteği/onay akışı, WebRTC offer/answer/ICE sinyalleşmesi ve TURN yapılandırması eklenecek.
+## Ses ağı ve sınırlar
+Bu prototip WebRTC mesh + genel STUN sunucuları kullanır. TURN sunucusu eklenmediği için bazı mobil operatör, kurumsal Wi-Fi ve NAT ağlarında ses bağlantısı kurulmayabilir. 5–10 kişilik grupta mesh bağlantısı cihaz/ağ performansına bağlıdır; üretim için yönetilen TURN veya SFU (ör. LiveKit Cloud) önerilir. iOS'ta uygulama arka planda veya ekran kilitliyken telsiz çalışması garanti edilmez.
 
-## iPhone notu
-Safari mikrofon erişimi için HTTPS gerekir. PWA ana ekrana eklenebilir; ancak iOS'ta arka planda/ekran kilitliyken sürekli telsiz davranışı garanti edilemez. İlk sürüm uygulama açıkken çalışacak şekilde hedeflenmelidir.
+## Test
+GitHub Actions `.github/workflows/validate.yml` JavaScript sözdizimini, web manifestini ve gerekli dosyaları kontrol eder. Bu statik kontroldür; gerçek Firebase ve iki cihazlı WebRTC testi yerine geçmez.
 
 ## Gizlilik
-Bu tasarım ses kaydı tutmaz. Ancak canlı ses paketleri internet üzerinden katılımcılara taşınır; sesin hiç işlenmediği veya ağ altyapısında hiçbir geçici aktarım olmadığı anlamına gelmez. Katılım bağlantıları tahmin edilemez olmalı ve oda sahibi onayı sunucu tarafında doğrulanmalıdır.
+Uygulama ses kaydı oluşturmaz. Ses, WebRTC ile canlı olarak katılımcılar arasında taşınır.
