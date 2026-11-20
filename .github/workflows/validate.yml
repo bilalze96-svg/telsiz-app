@@ -23,3 +23,12 @@ jobs:
         run: node --check app.js && npm run test:static && npm run build && npm run test:build
       - name: Run Firestore Rules tests in the Emulator
         run: npm run test:rules
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+          run_install: false
+      - name: Install and test Firebase Functions
+        run: pnpm --dir functions install --frozen-lockfile && pnpm --dir functions test
