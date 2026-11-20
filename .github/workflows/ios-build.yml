@@ -1,0 +1,31 @@
+name: Build native iOS TELSIZ
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+jobs:
+  simulator-build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate --spec project.yml
+      - name: Build for iOS Simulator
+        run: >-
+          xcodebuild
+          -project ios/Telsiz.xcodeproj
+          -scheme Telsiz
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath /tmp/TelsizDerived
+          CODE_SIGNING_ALLOWED=NO
+          build

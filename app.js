@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import {
-  addDoc, collection, deleteDoc, doc, getDocs, getFirestore, limit, onSnapshot,
+  addDoc, collection, deleteDoc, doc, getDocs, getFirestore, limit, onSnapshot, orderBy,
   query, serverTimestamp, setDoc, Timestamp, updateDoc, where
 } from "firebase/firestore";
 
@@ -399,7 +399,7 @@ function closePeer(id) {
 
 function watchChannel() {
   channelSnapshotInitialized = false;
-  membersUnsubscribe = onSnapshot(query(members, limit(MAX_PEOPLE + 5)), snapshot => {
+  membersUnsubscribe = onSnapshot(query(members, orderBy("lastSeen", "desc"), limit(MAX_PEOPLE + 5)), snapshot => {
     const previousMembers = memberCache;
     const nextMembers = new Map(snapshot.docs.map(item => [item.id, item.data()]));
     if (channelSnapshotInitialized) notifyNewTalkers(previousMembers, nextMembers);
@@ -660,4 +660,3 @@ try {
   }
 } catch {}
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
-

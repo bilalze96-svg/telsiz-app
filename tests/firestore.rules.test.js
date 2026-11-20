@@ -121,3 +121,35 @@ test("other anonymous visitors can remove expired sessions but not active ones",
   await assertSucceeds(deleteDoc(memberRef(cleaner, "session-expired")));
   await assertFails(deleteDoc(memberRef(cleaner, "session-current")));
 });
+
+test("only the owner can register a valid Apple PTT token for their live session", async () => {
+  await seedMember("session-user-a", "user-a");
+  const owner = firestoreFor("user-a");
+  const other = firestoreFor("user-b");
+  const token = doc(owner, "pttTokens", "user-a");
+  const tokenData = {
+    uid: "user-a",
+    sessionId: "session-user-a",
+    token: "a".repeat(64),
+    environment: "sandbox",
+    updatedAt: serverTimestamp()
+  };
+  await assertSucceeds(setDoc(token, tokenData));
+  await assertFails(setDoc(doc(other, "pttTokens", "user-a"), tokenData));
+  await assertFails(setDoc(doc(owner, "pttTokens", "user-a"), { ...tokenData, token: "not-a-device-token" }));
+  await assertFails(getDocs(collection(owner, "pttTokens")));
+  await assertSucceeds(deleteDoc(token));
+});
+
+test("a returning anonymous user can register one private emergency notification token", async () => {
+  const owner = firestoreFor("user-a");
+  const other = firestoreFor("user-b");
+  const token = doc(owner, "pushDevices", "user-a");
+  const tokenData = { uid: "user-a", token: "fcm-token-" + "x".repeat(100), updatedAt: serverTimestamp() };
+  await assertSucceeds(setDoc(token, tokenData));
+  await assertSucceeds(setDoc(token, { ...tokenData, token: "refreshed-fcm-token-" + "y".repeat(100) }));
+  await assertFails(setDoc(doc(other, "pushDevices", "user-a"), tokenData));
+  await assertFails(setDoc(doc(owner, "pushDevices", "user-a"), { ...tokenData, uid: "user-b" }));
+  await assertFails(getDocs(collection(owner, "pushDevices")));
+  await assertSucceeds(deleteDoc(token));
+});

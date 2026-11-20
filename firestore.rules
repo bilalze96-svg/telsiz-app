@@ -66,5 +66,37 @@ service cloud.firestore {
         allow update: if false;
       }
     }
+
+    match /pttTokens/{uid} {
+      allow read: if false;
+
+      allow create, update: if anonymous() && request.auth.uid == uid &&
+        request.resource.data.keys().hasAll(['uid', 'sessionId', 'token', 'environment', 'updatedAt']) &&
+        request.resource.data.keys().hasOnly(['uid', 'sessionId', 'token', 'environment', 'updatedAt']) &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.sessionId is string &&
+        ownSession(request.resource.data.sessionId) &&
+        request.resource.data.token is string &&
+        request.resource.data.token.matches('^[A-Fa-f0-9]{40,512}$') &&
+        request.resource.data.environment in ['sandbox', 'production'] &&
+        request.resource.data.updatedAt == request.time;
+
+      allow delete: if anonymous() && request.auth.uid == uid;
+    }
+
+    match /pushDevices/{uid} {
+      allow read: if false;
+
+      allow create, update: if anonymous() && request.auth.uid == uid &&
+        request.resource.data.keys().hasAll(['uid', 'token', 'updatedAt']) &&
+        request.resource.data.keys().hasOnly(['uid', 'token', 'updatedAt']) &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.token is string &&
+        request.resource.data.token.size() >= 20 &&
+        request.resource.data.token.size() <= 4096 &&
+        request.resource.data.updatedAt == request.time;
+
+      allow delete: if anonymous() && request.auth.uid == uid;
+    }
   }
 }
