@@ -8,7 +8,7 @@ Tek sabit bağlantı, tek genel kanal: adını yazıp gir, basılı tutup konuş
 - Ses, tarayıcılar arasında doğrudan WebRTC ile gider. Ses kaydı ve sohbet yoktur.
 - Konuşmak için düğmeyi basılı tut; bırakınca mikrofon sessize alınır. Karşıya giden sese dar bant filtresi, belirgin sıkıştırma, kısa PTT çift bip'i ve cızırtı uygulanır.
 - Bildirim için “Bildirimleri aç” düğmesine bas; izin verince deneme bildirimi gelir. iPhone’da önce Ana Ekran’a eklemek ve TELSİZ’i simgesinden açmak gerekir.
-- Ekran kilitlenince mikrofon susturulur; iOS WebRTC bağlantısını askıya alabilir. Sayfa tamamen kapatılınca oturumdan ayrılınır.
+- Arka plana geçince mikrofon susturulur ve WebRTC oturumu bilerek kapatılmaz. iOS sayfayı askıya alırsa bağlantı geçici olarak düşebilir; uygulamaya dönünce oturum ve mikrofon yeniden bağlanmayı dener. iPhone ekran kilitliyken canlı sesin sürmesi Safari/PWA tarafından garanti edilmez.
 - Uygulama tamamen kapalıyken uzaktan bildirim gönderimi kurulu değildir.
 - Arayüz en fazla 10 kişi gösterir. Bu basit sürümde sayı sunucu tarafında zorlanmaz.
 - Yalnızca STUN kullanılır, TURN yoktur. Bazı mobil veya kurumsal ağlarda bağlantı kurulamaması mümkündür. Acil iletişim için kullanmayın.
@@ -43,3 +43,4 @@ firebase deploy --only hosting,firestore:rules --project telsiz-app-88ecf
 Site: [https://telsiz-app-88ecf.web.app](https://telsiz-app-88ecf.web.app)
 
 Bu hafif sürüm Firebase Functions veya LiveKit kullanmaz; Firebase’de faturalandırma hesabı bağlamadan oda ve PTT akışını çalıştırmayı dener. Gerçek iki iPhone testi yapılmadı. WebRTC erişimi, kullanılan ağların doğrudan bağlantıya izin vermesine bağlıdır.
+

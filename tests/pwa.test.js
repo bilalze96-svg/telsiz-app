@@ -27,3 +27,18 @@ test("raster app icons have the declared PNG dimensions", async () => {
     assert.equal(icon.readUInt32BE(20), size);
   }
 });
+
+test("backgrounding mutes push-to-talk without explicitly leaving the channel", async () => {
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  assert.ok(app.includes('window.addEventListener("pagehide", muteForBackground);'));
+  assert.ok(!app.includes("window.addEventListener(\"pagehide\", exitForPageClose)"));
+  assert.ok(app.includes("async function restorePresence()"));
+});
+
+test("name is saved as it is typed and radio release has a transmitted tone", async () => {
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  assert.ok(app.includes('$("nameInput").addEventListener("input", () => rememberName($("nameInput").value));'));
+  assert.ok(app.includes("function playReleaseTone()"));
+  assert.ok(app.includes("playReleaseTone();"));
+});
+

@@ -13,7 +13,6 @@ const firebaseConfig = {
   messagingSenderId: "217716786139",
   appId: "1:217716786139:web:0d7bf957bf2f5afa031dfe"
 };
-
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app, "default");
@@ -42,6 +41,7 @@ let heartbeatTimer = null;
 let joined = false;
 let channelSnapshotInitialized = false;
 let talkToastTimer = null;
+let talkReleaseTimer = null;
 
 function say(id, text) { $(id).textContent = text; }
 function validName(value) { return value.trim().replace(/[<>]/g, "").replace(/\s+/g, " ").slice(0, 24); }
@@ -122,7 +122,7 @@ function playPttTone() {
     oscillator.type = "square";
     oscillator.frequency.setValueAtTime(1040, start);
     envelope.gain.setValueAtTime(0.001, start);
-    envelope.gain.exponentialRampToValueAtTime(0.16, start + 0.006);
+    envelope.gain.exponentialRampToValueAtTime(0.24, start + 0.006);
     envelope.gain.exponentialRampToValueAtTime(0.001, start + 0.06);
     oscillator.connect(envelope).connect(pttToneGain);
     oscillator.start(start);
@@ -139,9 +139,24 @@ function playPttTone() {
   const crackle = audioContext.createBufferSource();
   const crackleGain = audioContext.createGain();
   crackle.buffer = noiseBuffer;
-  crackleGain.gain.value = 0.08;
+  crackleGain.gain.value = 0.14;
   crackle.connect(crackleGain).connect(pttToneGain);
   crackle.start(now);
+}
+
+function playReleaseTone() {
+  if (!audioContext || !pttToneGain || audioContext.state === "closed") return;
+  const start = audioContext.currentTime;
+  const oscillator = audioContext.createOscillator();
+  const envelope = audioContext.createGain();
+  oscillator.type = "square";
+  oscillator.frequency.setValueAtTime(760, start);
+  envelope.gain.setValueAtTime(0.001, start);
+  envelope.gain.exponentialRampToValueAtTime(0.13, start + 0.004);
+  envelope.gain.exponentialRampToValueAtTime(0.001, start + 0.075);
+  oscillator.connect(envelope).connect(pttToneGain);
+  oscillator.start(start);
+  oscillator.stop(start + 0.08);
 }
 
 function createRadioAudioTrack() {
@@ -158,10 +173,10 @@ function createRadioAudioTrack() {
   const source = audioContext.createMediaStreamSource(localStream);
   const highPass = audioContext.createBiquadFilter();
   highPass.type = "highpass";
-  highPass.frequency.value = 380;
+  highPass.frequency.value = 330;
   const lowPass = audioContext.createBiquadFilter();
   lowPass.type = "lowpass";
-  lowPass.frequency.value = 2700;
+  lowPass.frequency.value = 2600;
   const drive = audioContext.createGain();
   drive.gain.value = 1.8;
   const saturation = audioContext.createWaveShaper();
@@ -272,7 +287,7 @@ async function handleSignal(peer, data) {
   }
 
   const description = JSON.parse(data.payload);
-  if (data.kind === "offer" && !peer.pc.remoteDescription) {
+  if (data.kind === "offer" && peer.pc.signalingState === "stable") {
     await peer.pc.setRemoteDescription(description);
     const answer = await peer.pc.createAnswer();
     await peer.pc.setLocalDescription(answer);
@@ -301,11 +316,16 @@ function receiveSignal(ref, data) {
   queueSignal(peer, { ref, data });
 }
 
-async function startOffer(peer) {
-  if (peer.offerStarted || sessionId.localeCompare(peer.id) > 0) return;
+async function startOffer(peer, restart = false) {
+  if ((!restart && peer.offerStarted) || sessionId.localeCompare(peer.id) > 0) return;
   peer.offerStarted = true;
   try {
-    const offer = await peer.pc.createOffer();
+    if (restart && peer.pc.signalingState === "have-local-offer") {
+      await peer.pc.setLocalDescription({ type: "rollback" });
+    }
+    if (peer.pc.signalingState !== "stable") return;
+    if (restart) peer.pc.restartIce?.();
+    const offer = await peer.pc.createOffer(restart ? { iceRestart: true } : undefined);
     await peer.pc.setLocalDescription(offer);
     await sendSignal(peer.id, "offer", JSON.stringify(peer.pc.localDescription));
   } catch (error) {
@@ -324,6 +344,7 @@ function addPeer(id, member) {
     offerStarted: false,
     pendingCandidates: [],
     signalQueue: Promise.resolve(),
+    restartTimer: null,
     audio: null
   };
   peers.set(id, peer);
@@ -345,6 +366,14 @@ function addPeer(id, member) {
   };
   pc.onconnectionstatechange = () => {
     peer.connected = pc.connectionState === "connected";
+    clearTimeout(peer.restartTimer);
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      peer.restartTimer = setTimeout(() => {
+        if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+          void startOffer(peer, true);
+        }
+      }, pc.connectionState === "failed" ? 0 : 5000);
+    }
     renderMembers();
     if (pc.connectionState === "failed") {
       say("radioMessage", "Bir cihazla bağlantı kurulamadı. Bazı ağlarda TURN gerekebilir.");
@@ -362,6 +391,7 @@ function closePeer(id) {
   if (!peer) return;
   peer.pc.onicecandidate = null;
   peer.pc.ontrack = null;
+  clearTimeout(peer.restartTimer);
   peer.pc.close();
   peer.audio?.remove();
   peers.delete(id);
@@ -410,6 +440,7 @@ async function joinChannel() {
     $("nameInput").focus();
     return;
   }
+  rememberName(name);
   if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) {
     say("joinMessage", "Bu tarayıcıda mikrofon veya WebRTC kullanılamıyor.");
     return;
@@ -433,6 +464,7 @@ async function joinChannel() {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false
     });
+    try { localStorage.setItem("telsiz-mic-authorized", "yes"); } catch {}
     createRadioAudioTrack();
     sessionId = crypto.randomUUID();
     ownMemberRef = sessionRef(sessionId);
@@ -460,12 +492,24 @@ async function joinChannel() {
   }
 }
 
-function setTalking(value) {
+function setTalking(value, playTail = false) {
   if (!joined || !localTrack || talking === value) return;
+  clearTimeout(talkReleaseTimer);
   talking = value;
   if (microphoneTrack) microphoneTrack.enabled = value;
-  localTrack.enabled = value;
-  if (value) playPttTone();
+  if (value) {
+    localTrack.enabled = true;
+    playPttTone();
+  } else if (playTail && !document.hidden && audioContext?.state !== "closed") {
+    // Mute the mic immediately; leave the outgoing track open only for the short radio tail.
+    localTrack.enabled = true;
+    playReleaseTone();
+    talkReleaseTimer = setTimeout(() => {
+      if (!talking && localTrack) localTrack.enabled = false;
+    }, 100);
+  } else {
+    localTrack.enabled = false;
+  }
   $("talkButton").classList.toggle("pressed", value);
   $("talkButton").setAttribute("aria-pressed", String(value));
   say("talkLabel", value ? "KONUŞUYORSUN" : "BASILI TUT, KONUŞ");
@@ -476,6 +520,7 @@ function setTalking(value) {
 async function leaveChannel() {
   setTalking(false);
   joined = false;
+  clearTimeout(talkReleaseTimer);
   clearInterval(heartbeatTimer);
   membersUnsubscribe?.();
   inboxUnsubscribe?.();
@@ -507,6 +552,8 @@ async function leaveChannel() {
 
 $("joinButton").addEventListener("click", joinChannel);
 $("nameInput").addEventListener("keydown", event => { if (event.key === "Enter") joinChannel(); });
+$("nameInput").addEventListener("input", () => rememberName($("nameInput").value));
+$("nameInput").addEventListener("change", () => rememberName($("nameInput").value));
 $("leaveButton").addEventListener("click", leaveChannel);
 $("talkButton").addEventListener("pointerdown", event => {
   if (event.button !== 0) return;
@@ -515,7 +562,7 @@ $("talkButton").addEventListener("pointerdown", event => {
   setTalking(true);
 });
 ["pointerup", "pointercancel", "lostpointercapture", "pointerleave"].forEach(type => {
-  $("talkButton").addEventListener(type, () => setTalking(false));
+  $("talkButton").addEventListener(type, () => setTalking(false, type === "pointerup"));
 });
 $("talkButton").addEventListener("contextmenu", event => event.preventDefault());
 $("enableAudioButton").addEventListener("click", async () => {
@@ -524,34 +571,93 @@ $("enableAudioButton").addEventListener("click", async () => {
 });
 window.addEventListener("blur", () => setTalking(false));
 function muteForBackground() {
-  if (localTrack) localTrack.enabled = false;
-  if (microphoneTrack) microphoneTrack.enabled = false;
   if (joined && talking) setTalking(false);
+  else {
+    if (localTrack) localTrack.enabled = false;
+    if (microphoneTrack) microphoneTrack.enabled = false;
+  }
 }
 
-function exitForPageClose() {
-  muteForBackground();
-  if (joined) {
-    void leaveChannel();
-  } else {
-    localStream?.getTracks().forEach(track => track.stop());
-    localStream = null;
-    closeRadioAudio();
+async function restorePresence() {
+  if (!joined || !ownMemberRef || !user) return;
+  let savedName = "Misafir";
+  try { savedName = localStorage.getItem("telsiz-name") || savedName; } catch {}
+  const name = validName($("nameInput").value) || savedName;
+  try {
+    await updateDoc(ownMemberRef, { lastSeen: serverTimestamp(), talking: false });
+  } catch {
+    try {
+      await setDoc(ownMemberRef, {
+        uid: user.uid,
+        name,
+        joinedAt: serverTimestamp(),
+        lastSeen: serverTimestamp(),
+        talking: false
+      });
+    } catch (error) {
+      say("radioMessage", `Kanala yeniden bağlanılamadı: ${error.message}`);
+      return;
+    }
   }
+  if (microphoneTrack?.readyState === "ended") {
+    say("radioMessage", "Mikrofon yeniden bağlanıyor…");
+    const previousStream = localStream;
+    const AudioContextType = window.AudioContext || window.webkitAudioContext;
+    try {
+      closeRadioAudio();
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
+      });
+      if (AudioContextType) audioContext = new AudioContextType({ latencyHint: "interactive" });
+      createRadioAudioTrack();
+      await Promise.all([...peers.values()].map(peer => {
+        const sender = peer.pc.getSenders().find(item => item.track?.kind === "audio");
+        return sender ? sender.replaceTrack(localTrack) : Promise.resolve();
+      }));
+      previousStream?.getTracks().forEach(track => track.stop());
+      renderMembers();
+      say("radioMessage", "Mikrofon ve kanal yeniden bağlandı. Konuşmak için uygulama açık olmalı.");
+    } catch (error) {
+      previousStream?.getTracks().forEach(track => track.stop());
+      localStream = null;
+      closeRadioAudio();
+      renderMembers();
+      say("radioMessage", "iPhone mikrofonu arka planda durdurdu. Kanaldan çıkıp yeniden katıl.");
+      console.warn("Mikrofon geri yüklenemedi", error);
+    }
+  } else {
+    for (const [id, peer] of peers) {
+      if (["failed", "closed"].includes(peer.pc.connectionState)) {
+        closePeer(id);
+        const member = memberCache.get(id);
+        if (member && isFresh(member)) addPeer(id, member);
+      }
+    }
+    say("radioMessage", "Kanala döndün. iPhone arka planda canlı sesi durdurabilir; konuşmak için uygulama açık olmalı.");
+  }
+  renderMembers();
 }
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     muteForBackground();
-  } else if (joined && ownMemberRef) {
-    updateDoc(ownMemberRef, { lastSeen: serverTimestamp() }).catch(() => {});
-  }
+  } else void restorePresence();
 });
-window.addEventListener("pagehide", exitForPageClose);
+window.addEventListener("pagehide", muteForBackground);
 $("notificationButton").addEventListener("click", enableNotifications);
 if ("Notification" in window && Notification.permission === "granted") {
   $("notificationButton").textContent = "BİLDİRİMİ TEST ET";
   say("notificationMessage", "Bildirim izni açık. Düğmeye basıp deneme bildirimi gönder.");
 }
 
+function rememberName(value) {
+  try { localStorage.setItem("telsiz-name", validName(value)); } catch {}
+}
 try { $("nameInput").value = localStorage.getItem("telsiz-name") || ""; } catch {}
+try {
+  if (localStorage.getItem("telsiz-mic-authorized") === "yes") {
+    say("micMessage", "Bu cihazda mikrofon izni daha önce verildi. Tarayıcı izni korunuyorsa tekrar sormaz.");
+  }
+} catch {}
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+

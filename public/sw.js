@@ -1,4 +1,4 @@
-const CACHE = "telsiz-shell-v7";
+const CACHE = "telsiz-shell-v8";
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg", "/icons/apple-touch-icon.png"];
 
 self.addEventListener("install", event => {
@@ -42,3 +42,4 @@ self.addEventListener("fetch", event => {
     })));
   }
 });
+

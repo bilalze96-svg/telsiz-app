@@ -21,5 +21,6 @@ test("production build includes the fixed-channel push-to-talk app without LiveK
   assert.ok(html.includes("GENEL KANAL"), "page contains the shared fixed channel");
   assert.ok(html.includes('id="talkToast"'), "page contains the accessible talk notification");
   assert.ok(html.includes('id="notificationButton"'), "page offers an explicit notification permission action");
-  assert.ok(html.includes("Bip ve telsiz tonu karşıya gider"), "page explains the transmitted radio sound effect");
+  assert.ok(html.includes("Açılış ve bırakma bipleri karşıya gider"), "page explains the transmitted radio sound effect");
 });
+
