@@ -16,7 +16,7 @@ test("production build includes the fixed-channel push-to-talk app without LiveK
   assert.ok(javascript.includes("createMediaStreamDestination"), "outgoing audio uses the radio voice processing path");
   assert.ok(javascript.includes("createWaveShaper"), "radio voice has saturation processing");
   assert.ok(javascript.includes("showNotification"), "permitted users receive system notifications");
-  assert.ok(javascript.includes("emergencyWebRateLimits"), "emergency action writes a rate-limited Firestore alert");
+  assert.ok(javascript.includes("emergencyAlerts"), "emergency action writes a Firestore alert");
   assert.ok(html.includes("ACİL DURUM BİLDİR"), "page contains the one-tap emergency control");
   assert.ok(javascript.includes("TELSİZ bildirimi çalışıyor"), "notification permission can be verified with a test alert");
   assert.ok(html.includes("BASILI TUT, KONUŞ"), "page contains the push-to-talk control");

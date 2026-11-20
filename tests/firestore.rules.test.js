@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { after, before, beforeEach, test } from "node:test";
 import { assertFails, assertSucceeds, initializeTestEnvironment } from "@firebase/rules-unit-testing";
 import {
-  collection, deleteDoc, doc, getDocs, limit, onSnapshot, orderBy, query, serverTimestamp,
-  runTransaction, setDoc, Timestamp, updateDoc, where
+  addDoc, collection, deleteDoc, doc, getDocs, limit, onSnapshot, orderBy, query, serverTimestamp,
+  setDoc, Timestamp, updateDoc, where
 } from "firebase/firestore";
 
 const projectId = "telsiz-app-88ecf";
@@ -174,35 +174,25 @@ test("only an anonymous device owner can register a valid private web push subsc
   await assertSucceeds(deleteDoc(subscription));
 });
 
-test("emergency alerts reach open clients and require a two-minute owner cooldown", async () => {
+test("emergency alerts can be sent repeatedly and are visible to open clients", async () => {
   const owner = firestoreFor("user-a");
   const recipient = firestoreFor("user-b");
-  const rateLimit = doc(owner, "emergencyWebRateLimits", "user-a");
-  const alert = doc(collection(owner, "emergencyAlerts"));
-  await assertFails(setDoc(alert, { uid: "user-a", name: "Ece", createdAt: serverTimestamp() }));
-  await assertSucceeds(runTransaction(owner, async transaction => {
-    await transaction.get(rateLimit);
-    transaction.set(rateLimit, { uid: "user-a", lastSentAt: serverTimestamp() });
-    transaction.set(alert, { uid: "user-a", name: "Ece", createdAt: serverTimestamp() });
+  await assertSucceeds(addDoc(collection(owner, "emergencyAlerts"), {
+    uid: "user-a", name: "Ece", createdAt: serverTimestamp()
+  }));
+  await assertSucceeds(addDoc(collection(owner, "emergencyAlerts"), {
+    uid: "user-a", name: "Ece", createdAt: serverTimestamp()
+  }));
+  await assertFails(addDoc(collection(owner, "emergencyAlerts"), {
+    uid: "user-b", name: "Ece", createdAt: serverTimestamp()
   }));
   const alerts = await assertSucceeds(getDocs(collection(recipient, "emergencyAlerts")));
-  assert.equal(alerts.size, 1);
-  const nextAlert = doc(collection(owner, "emergencyAlerts"));
-  await assertFails(runTransaction(owner, async transaction => {
-    await transaction.get(rateLimit);
-    transaction.set(rateLimit, { uid: "user-a", lastSentAt: serverTimestamp() });
-    transaction.set(nextAlert, { uid: "user-a", name: "Ece", createdAt: serverTimestamp() });
-  }));
-  await assertFails(setDoc(doc(recipient, "emergencyWebRateLimits", "user-a"), {
-    uid: "user-a", lastSentAt: serverTimestamp()
-  }));
+  assert.equal(alerts.size, 2);
 });
 
 test("an active recipient receives the alert as a realtime Firestore update", async () => {
   const owner = firestoreFor("user-a");
   const recipient = firestoreFor("user-b");
-  const rateLimit = doc(owner, "emergencyWebRateLimits", "user-a");
-  const alert = doc(collection(owner, "emergencyAlerts"));
   const alerts = query(
     collection(recipient, "emergencyAlerts"),
     where("createdAt", ">", Timestamp.fromMillis(Date.now() - 86_400_000)),
@@ -228,10 +218,8 @@ test("an active recipient receives the alert as a realtime Firestore update", as
 
   try {
     await initialSnapshot;
-    await runTransaction(owner, async transaction => {
-      await transaction.get(rateLimit);
-      transaction.set(rateLimit, { uid: "user-a", lastSentAt: serverTimestamp() });
-      transaction.set(alert, { uid: "user-a", name: "Ece", createdAt: serverTimestamp() });
+    await addDoc(collection(owner, "emergencyAlerts"), {
+      uid: "user-a", name: "Ece", createdAt: serverTimestamp()
     });
     const result = await Promise.race([
       receivedAlert,

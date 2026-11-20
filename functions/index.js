@@ -17,7 +17,6 @@ const webPushPrivateKey = defineSecret("TELSIZ_WEBPUSH_PRIVATE_KEY");
 const apnsKeyId = defineString("TELSIZ_APNS_KEY_ID");
 const appleTeamId = defineString("TELSIZ_APPLE_TEAM_ID");
 const iosBundleId = defineString("TELSIZ_IOS_BUNDLE_ID", { default: "com.bilalze96.telsiz" });
-const emergencyCooldownMs = 120_000;
 const twilioAccountSid = defineString("TELSIZ_TWILIO_ACCOUNT_SID");
 const twilioAuthToken = defineSecret("TELSIZ_TWILIO_AUTH_TOKEN");
 let cachedProviderToken = "";
@@ -90,16 +89,6 @@ export const sendEmergencyAlert = onCall({
   if (!name) throw new HttpsError("invalid-argument", "A display name is required.");
 
   const db = getFirestore(getApp(), "default");
-  const limiter = db.collection("emergencyRateLimits").doc(uid);
-  await db.runTransaction(async transaction => {
-    const snapshot = await transaction.get(limiter);
-    const lastSentAt = snapshot.get("lastSentAt")?.toMillis?.() ?? 0;
-    if (Date.now() - lastSentAt < emergencyCooldownMs) {
-      throw new HttpsError("resource-exhausted", "Please wait before sending another emergency alert.");
-    }
-    transaction.set(limiter, { lastSentAt: new Date() });
-  });
-
   const [nativeDevices, webDevices] = await Promise.all([
     db.collection("pushDevices").get(),
     db.collection("webPushDevices").get()

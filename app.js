@@ -4,7 +4,7 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import { VAPID_PUBLIC_KEY } from "./vapid-public-key.js";
 import {
   addDoc, collection, deleteDoc, doc, getDocs, getFirestore, limit, onSnapshot, orderBy,
-  query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where
+  query, serverTimestamp, setDoc, Timestamp, updateDoc, where
 } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -48,6 +48,7 @@ let talkToastTimer = null;
 let talkReleaseTimer = null;
 let emergencyAlertsUnsubscribe = null;
 let emergencyAlertsSnapshotReady = false;
+const emergencyAlertsListenerStartedAt = Date.now();
 
 function say(id, text) { $(id).textContent = text; }
 function validName(value) { return value.trim().replace(/[<>]/g, "").replace(/\s+/g, " ").slice(0, 24); }
@@ -166,9 +167,7 @@ async function sendEmergencyAlert(button) {
     emergencyMessage("Acil uyarı açık TELSİZ sayfalarına iletildi. Kapalı sayfalara bildirim gönderilmez.");
     if (typeof navigator.vibrate === "function") navigator.vibrate([100, 60, 180]);
   } catch (error) {
-    emergencyMessage(error.code === "emergency/cooldown"
-      ? "Yeni acil bildirim için iki dakika bekle."
-      : error.message || "Acil uyarı gönderilemedi. İnternet bağlantısını kontrol et.");
+    emergencyMessage(error.message || "Acil uyarı gönderilemedi. İnternet bağlantısını kontrol et.");
   } finally {
     button.disabled = false;
     button.querySelector("span").textContent = "🆘 ACİL DURUM BİLDİR";
@@ -177,19 +176,7 @@ async function sendEmergencyAlert(button) {
 
 async function publishEmergencyToOpenClients(uid, name) {
   if (!name) throw new Error("Acil bildirim göndermek için önce adını kaydet.");
-  const rateLimitRef = doc(db, "emergencyWebRateLimits", uid);
-  const alertRef = doc(collection(db, "emergencyAlerts"));
-  await runTransaction(db, async transaction => {
-    const previous = await transaction.get(rateLimitRef);
-    const lastSentAt = previous.get("lastSentAt")?.toMillis?.() || 0;
-    if (Date.now() - lastSentAt < 120_000) {
-      const error = new Error("Yeni acil bildirim için iki dakika bekle.");
-      error.code = "emergency/cooldown";
-      throw error;
-    }
-    transaction.set(rateLimitRef, { uid, lastSentAt: serverTimestamp() });
-    transaction.set(alertRef, { uid, name, createdAt: serverTimestamp() });
-  });
+  await addDoc(collection(db, "emergencyAlerts"), { uid, name, createdAt: serverTimestamp() });
 }
 
 function receiveEmergencyAlert(name) {
@@ -222,6 +209,13 @@ async function watchEmergencyAlerts() {
   emergencyAlertsUnsubscribe = onSnapshot(alerts, snapshot => {
     if (!emergencyAlertsSnapshotReady) {
       emergencyAlertsSnapshotReady = true;
+      const newSincePageOpened = snapshot.docs.filter(item =>
+        item.data().createdAt?.toMillis?.() >= emergencyAlertsListenerStartedAt - 30_000
+      );
+      for (const item of newSincePageOpened) {
+        const alert = item.data();
+        if (alert.uid !== user.uid && typeof alert.name === "string") receiveEmergencyAlert(alert.name);
+      }
       return;
     }
     for (const change of snapshot.docChanges()) {
@@ -229,7 +223,10 @@ async function watchEmergencyAlerts() {
       const alert = change.doc.data();
       if (alert.uid !== user.uid && typeof alert.name === "string") receiveEmergencyAlert(alert.name);
     }
-  }, error => console.warn("Acil uyarı kanalı bağlanamadı", error));
+  }, error => {
+    emergencyMessage(`Acil uyarı bağlantısı kurulamadı: ${error.message}`);
+    console.warn("Acil uyarı kanalı bağlanamadı", error);
+  });
 }
 
 function notifyNewTalkers(previous, current) {
