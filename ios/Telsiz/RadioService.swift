@@ -86,7 +86,7 @@ final class RadioService: NSObject, ObservableObject {
         do {
             if channelManager == nil { await preparePushToTalk() }
             guard let channelManager else { throw RadioError.pttUnavailable }
-            guard try await requestMicrophonePermission() else { throw RadioError.microphoneDenied }
+            guard await requestMicrophonePermission() else { throw RadioError.microphoneDenied }
             authUser = try await anonymousUser()
             await refreshIceServers()
             try await createFirebaseSession()
@@ -119,7 +119,7 @@ final class RadioService: NSObject, ObservableObject {
             joining = false
             startWatching()
             status = "KANALDA"
-            await channelManager?.setServiceStatus(.ready, channelUUID: Self.channelUUID)
+            try await channelManager?.setServiceStatus(.ready, channelUUID: Self.channelUUID)
         } catch {
             message = "Kanal geri yüklenemedi: \(error.localizedDescription)"
             joining = false
@@ -322,10 +322,11 @@ final class RadioService: NSObject, ObservableObject {
                     .httpsCallable("sendEmergencyAlert")
                     .call(["name": cleanName])
                 let payload = result.data as? [String: Any] ?? [:]
-                let recipients = payload["registered"] as? Int ?? 0
-                message = recipients == 0
-                    ? "Acil durum bildirimi gönderildi; kayıtlı alıcı bulunamadı."
-                    : "Acil durum bildirimi \(recipients) kayıtlı cihaza gönderildi."
+                let registered = payload["registered"] as? Int ?? 0
+                let accepted = payload["delivered"] as? Int ?? 0
+                message = accepted == 0
+                    ? (registered == 0 ? "Kayıtlı alıcı cihaz bulunamadı." : "Bildirim servisi bu kez hiçbir cihazı kabul etmedi.")
+                    : "Acil bildirim \(accepted) cihaza iletilmek üzere kuyruğa alındı."
             } catch {
                 message = "Acil durum bildirimi gönderilemedi: \(error.localizedDescription)"
             }
@@ -429,7 +430,7 @@ extension RadioService: PTChannelManagerDelegate, PTChannelRestorationDelegate, 
         status = "KANALDA"
         message = "Hazır. Basılı tutup konuş."
         startWatching()
-        Task { await channelManager.setServiceStatus(.ready, channelUUID: channelUUID) }
+        Task { try? await channelManager.setServiceStatus(.ready, channelUUID: channelUUID) }
     }
 
     func channelManager(_ channelManager: PTChannelManager, didLeaveChannel channelUUID: UUID, reason: PTChannelLeaveReason) {
