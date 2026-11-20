@@ -44,6 +44,7 @@ targets:
       - package: WebRTC
         product: WebRTC
     info:
+      path: Telsiz/Info.plist
       properties:
         NSMicrophoneUsageDescription: TELSİZ bas konuş iletimi için mikrofonu kullanır.
         UIBackgroundModes:
