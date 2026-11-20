@@ -16,6 +16,8 @@ test("production build includes the fixed-channel push-to-talk app without LiveK
   assert.ok(javascript.includes("createMediaStreamDestination"), "outgoing audio uses the radio voice processing path");
   assert.ok(javascript.includes("createWaveShaper"), "radio voice has saturation processing");
   assert.ok(javascript.includes("showNotification"), "permitted users receive system notifications");
+  assert.ok(javascript.includes("sendEmergencyAlert"), "emergency hold calls the deployed notification function");
+  assert.ok(html.includes("ACİL DURUM — 3 SN BASILI TUT"), "page contains the emergency hold control");
   assert.ok(javascript.includes("TELSİZ bildirimi çalışıyor"), "notification permission can be verified with a test alert");
   assert.ok(html.includes("BASILI TUT, KONUŞ"), "page contains the push-to-talk control");
   assert.ok(html.includes("GENEL KANAL"), "page contains the shared fixed channel");
@@ -23,4 +25,3 @@ test("production build includes the fixed-channel push-to-talk app without LiveK
   assert.ok(html.includes('id="notificationButton"'), "page offers an explicit notification permission action");
   assert.ok(html.includes("Açılış ve bırakma bipleri karşıya gider"), "page explains the transmitted radio sound effect");
 });
-

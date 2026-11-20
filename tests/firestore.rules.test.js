@@ -4,7 +4,7 @@ import { after, before, beforeEach, test } from "node:test";
 import { assertFails, assertSucceeds, initializeTestEnvironment } from "@firebase/rules-unit-testing";
 import {
   collection, deleteDoc, doc, getDocs, limit, query, serverTimestamp,
-  setDoc, Timestamp, updateDoc
+  runTransaction, setDoc, Timestamp, updateDoc
 } from "firebase/firestore";
 
 const projectId = "telsiz-app-88ecf";
@@ -152,6 +152,50 @@ test("a returning anonymous user can register one private emergency notification
   await assertFails(setDoc(doc(owner, "pushDevices", "user-a"), { ...tokenData, uid: "user-b" }));
   await assertFails(getDocs(collection(owner, "pushDevices")));
   await assertSucceeds(deleteDoc(token));
+});
+
+test("only an anonymous device owner can register a valid private web push subscription", async () => {
+  const owner = firestoreFor("user-a");
+  const other = firestoreFor("user-b");
+  const subscription = doc(owner, "webPushDevices", "user-a");
+  const data = {
+    uid: "user-a",
+    endpoint: "https://push.example.com/" + "e".repeat(80),
+    keys: { p256dh: "p".repeat(87), auth: "a".repeat(22) },
+    updatedAt: serverTimestamp()
+  };
+  await assertSucceeds(setDoc(subscription, data));
+  await assertSucceeds(setDoc(subscription, { ...data, endpoint: "https://push.example.com/" + "f".repeat(80) }));
+  await assertFails(setDoc(doc(other, "webPushDevices", "user-a"), data));
+  await assertFails(setDoc(subscription, { ...data, uid: "user-b" }));
+  await assertFails(setDoc(subscription, { ...data, endpoint: "http://push.example.com/subscription" }));
+  await assertFails(setDoc(subscription, { ...data, keys: { p256dh: "short", auth: "a".repeat(22) } }));
+  await assertFails(getDocs(collection(owner, "webPushDevices")));
+  await assertSucceeds(deleteDoc(subscription));
+});
+
+test("emergency alerts reach open clients and require a two-minute owner cooldown", async () => {
+  const owner = firestoreFor("user-a");
+  const recipient = firestoreFor("user-b");
+  const rateLimit = doc(owner, "emergencyWebRateLimits", "user-a");
+  const alert = doc(collection(owner, "emergencyAlerts"));
+  await assertFails(setDoc(alert, { uid: "user-a", name: "Ece", createdAt: serverTimestamp() }));
+  await assertSucceeds(runTransaction(owner, async transaction => {
+    await transaction.get(rateLimit);
+    transaction.set(rateLimit, { uid: "user-a", lastSentAt: serverTimestamp() });
+    transaction.set(alert, { uid: "user-a", name: "Ece", createdAt: serverTimestamp() });
+  }));
+  const alerts = await assertSucceeds(getDocs(collection(recipient, "emergencyAlerts")));
+  assert.equal(alerts.size, 1);
+  const nextAlert = doc(collection(owner, "emergencyAlerts"));
+  await assertFails(runTransaction(owner, async transaction => {
+    await transaction.get(rateLimit);
+    transaction.set(rateLimit, { uid: "user-a", lastSentAt: serverTimestamp() });
+    transaction.set(nextAlert, { uid: "user-a", name: "Ece", createdAt: serverTimestamp() });
+  }));
+  await assertFails(setDoc(doc(recipient, "emergencyWebRateLimits", "user-a"), {
+    uid: "user-a", lastSentAt: serverTimestamp()
+  }));
 });
 
 test("short-lived server-side TURN credentials cannot be read or changed by clients", async () => {

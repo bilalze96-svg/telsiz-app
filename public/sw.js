@@ -13,11 +13,30 @@ self.addEventListener("activate", event => {
   self.clients.claim();
 });
 
+self.addEventListener("push", event => {
+  let payload = {};
+  try { payload = event.data?.json() || {}; } catch {
+    payload = { body: event.data?.text() || "TELSİZ ekibinden yeni bildirim." };
+  }
+  const title = typeof payload.title === "string" ? payload.title : "TELSİZ";
+  const options = {
+    body: typeof payload.body === "string" ? payload.body : "TELSİZ ekibinden yeni bildirim.",
+    icon: "/icons/apple-touch-icon.png",
+    badge: "/icons/apple-touch-icon.png",
+    tag: typeof payload.tag === "string" ? payload.tag : "telsiz-push",
+    renotify: true,
+    data: { url: typeof payload.url === "string" ? payload.url : "/" }
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
 self.addEventListener("notificationclick", event => {
   event.notification.close();
   event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(clients => {
     const existing = clients.find(client => "focus" in client);
-    return existing ? existing.focus() : self.clients.openWindow("/");
+    const url = new URL(event.notification.data?.url || "/", self.location.origin);
+    const safeUrl = url.origin === self.location.origin ? url.href : self.location.origin;
+    return existing ? existing.focus() : self.clients.openWindow(safeUrl);
   }));
 });
 
@@ -42,4 +61,3 @@ self.addEventListener("fetch", event => {
     })));
   }
 });
-

@@ -7,9 +7,9 @@ Tek sabit bağlantı, tek genel kanal: adını yazıp gir, basılı tutup konuş
 - Firebase Anonymous Authentication isimsiz oturum açar; Firestore kanaldaki kişileri ve WebRTC bağlantı sinyallerini taşır.
 - Ses, tarayıcılar arasında doğrudan WebRTC ile gider. Ses kaydı ve sohbet yoktur.
 - Konuşmak için düğmeyi basılı tut; bırakınca mikrofon sessize alınır. Karşıya giden sese dar bant filtresi, belirgin sıkıştırma, kısa PTT çift bip'i ve cızırtı uygulanır.
-- Bildirim için “Bildirimleri aç” düğmesine bas; izin verince deneme bildirimi gelir. iPhone’da önce Ana Ekran’a eklemek ve TELSİZ’i simgesinden açmak gerekir.
+- Bildirim iznini “Bildirimleri aç” düğmesinden ver. Üç saniye basılı tutulan acil durum düğmesi kanala bağlı olmayan, TELSİZ sayfası açık kullanıcıların ekranında uyarı gösterir. iPhone’da web bildirimi için önce Ana Ekran’a ekleyip TELSİZ’i simgesinden açmak gerekir.
 - Arka plana geçince mikrofon susturulur ve WebRTC oturumu bilerek kapatılmaz. iOS sayfayı askıya alırsa bağlantı geçici olarak düşebilir; uygulamaya dönünce oturum ve mikrofon yeniden bağlanmayı dener. iPhone ekran kilitliyken canlı sesin sürmesi Safari/PWA tarafından garanti edilmez.
-- Uygulama tamamen kapalıyken uzaktan bildirim gönderimi kurulu değildir.
+- PWA push abonelik kaydı ve sunucu gönderim kodu hazırdır. Uygulama kapalıyken push göndermek için Firebase Functions'ın Blaze planında dağıtılması gerekir. Mevcut Firebase projesi Spark planında olduğundan canlı sürüm şu anda açık TELSİZ oturumlarına Firestore üzerinden uyarı gönderir; uygulama kapalı cihazlara push ulaşmaz.
 - Arayüz en fazla 10 kişi gösterir. Bu basit sürümde sayı sunucu tarafında zorlanmaz.
 - Twilio Network Traversal Service için kısa ömürlü TURN kimlik bilgileri Cloud Function üzerinden alınır; kimlik bilgisi yoksa istemci STUN ile devam eder. TURN relay trafiği hizmet sağlayıcı maliyetine tabidir.
 - iPhone’da Safari ile açın ve mikrofon izni verin. Bildirim izni için paylaşım menüsünden Ana Ekran’a ekleyip TELSİZ’i simgesinden açın.
@@ -24,7 +24,7 @@ Firebase projesi: `telsiz-app-88ecf`. Anonymous sign-in etkin, Firestore veritab
 
 Derlemek için macOS, Xcode 26.2+, XcodeGen ve Apple Developer hesabında Push to Talk/APNs capability ve provisioning gerekir. GitHub Actions yalnızca imzasız iOS Simulator derlemesi yapar. Apple APNs P8 anahtarını Firebase Console > Project Settings > Cloud Messaging'e ekleyin. PTT uyanma push'ı için aynı anahtarı Secret Manager'a `firebase functions:secrets:set TELSIZ_APNS_AUTH_KEY --project telsiz-app-88ecf` ile kaydedin; dağıtım sırasında `TELSIZ_APNS_KEY_ID` ve `TELSIZ_APPLE_TEAM_ID` değerlerini girin. Twilio hesabından Account SID ve Auth Token alıp `TELSIZ_TWILIO_ACCOUNT_SID` ile `TELSIZ_TWILIO_AUTH_TOKEN` olarak ayarlayın. Sonra `firebase deploy --only functions --project telsiz-app-88ecf` çalıştırın. İmza anahtarı veya servis hesabı anahtarı repoya konmaz.
 
-Arka planda PTT ve acil durum bildirimi ile TURN yedeği için Firebase Functions'ın Blaze planında dağıtılması, Twilio hesabının tanımlanması, APNs ayarlarının yapılması ve Apple PTT entitlement'ı olan imzalı uygulamanın iki gerçek iPhone'da denenmesi gerekir. APNs/Twilio anahtarlarını kaynak koda koymayın. Bu adımlar yapılana kadar native iPhone uygulaması test edilmemiş prototiptir; mevcut web sürümü yayında kalır.
+Arka planda PTT ve acil durum bildirimi ile TURN yedeği için Firebase Functions'ın Blaze planında dağıtılması, Twilio hesabının tanımlanması, APNs ayarlarının yapılması ve Apple PTT entitlement'ı olan imzalı uygulamanın iki gerçek iPhone'da denenmesi gerekir. APNs/Twilio/VAPID özel anahtarlarını kaynak koda koymayın. Bu adımlar yapılana kadar native iPhone uygulaması test edilmemiş prototiptir; mevcut web sürümü yayında kalır.
 
 Yerelde çalıştırmak için Node.js 24 veya üstü ve Java 21 kurulu olsun:
 
@@ -50,4 +50,4 @@ firebase deploy --only hosting,firestore:rules --project telsiz-app-88ecf
 
 Site: [https://telsiz-app-88ecf.web.app](https://telsiz-app-88ecf.web.app)
 
-Bu hafif sürüm Firebase Functions veya LiveKit kullanmaz; Firebase’de faturalandırma hesabı bağlamadan oda ve PTT akışını çalıştırmayı dener. Gerçek iki iPhone testi yapılmadı. WebRTC erişimi, kullanılan ağların doğrudan bağlantıya izin vermesine bağlıdır.
+Web acil uyarı düğmesi canlıdır. Sayfa açık olan ziyaretçiler uyarıyı görür; uygulama kapalı cihazlara web push gönderimi, mevcut projenin Blaze planına yükseltilmesine ve Functions dağıtımına bağlıdır. TURN ve native iOS push fonksiyonları da henüz dağıtılmadı. Gerçek iki iPhone testi yapılmadı. WebRTC erişimi, kullanılan ağların doğrudan bağlantıya izin vermesine bağlıdır.

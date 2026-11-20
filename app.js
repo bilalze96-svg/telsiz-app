@@ -1,9 +1,10 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { VAPID_PUBLIC_KEY } from "./vapid-public-key.js";
 import {
   addDoc, collection, deleteDoc, doc, getDocs, getFirestore, limit, onSnapshot, orderBy,
-  query, serverTimestamp, setDoc, Timestamp, updateDoc, where
+  query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where
 } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -45,6 +46,12 @@ let joined = false;
 let channelSnapshotInitialized = false;
 let talkToastTimer = null;
 let talkReleaseTimer = null;
+let emergencyHoldTimer = null;
+let emergencyProgressTimer = null;
+let emergencyHoldButton = null;
+let emergencyHoldTriggered = false;
+let emergencyAlertsUnsubscribe = null;
+let emergencyAlertsSnapshotReady = false;
 
 function say(id, text) { $(id).textContent = text; }
 function validName(value) { return value.trim().replace(/[<>]/g, "").replace(/\s+/g, " ").slice(0, 24); }
@@ -92,20 +99,207 @@ async function enableNotifications() {
       ? "granted"
       : await Notification.requestPermission();
     if (permission === "granted") {
-      $("notificationButton").textContent = "BİLDİRİMİ TEST ET";
+      await registerEmergencyPush();
+      $("notificationButton").textContent = "ACİL BİLDİRİMLER AÇIK · TEST ET";
       const registration = await navigator.serviceWorker.ready;
       await registration.showNotification("TELSİZ bildirimi çalışıyor", {
         body: "Bu telefonda bildirim izni açık.",
         icon: "/icons/apple-touch-icon.png",
         tag: "telsiz-notification-test"
       });
-      say("notificationMessage", "Deneme bildirimi gönderildi. Konuşma bildirimleri TELSİZ açıkken gelir.");
+      say("notificationMessage", "Bildirim izni açık. TELSİZ sayfası çalışırken ekip acil uyarıları görünür.");
     } else {
       say("notificationMessage", "İzin kapalı. iPhone Ayarlar → Bildirimler → TELSİZ bölümünden izin ver.");
     }
   } catch {
     say("notificationMessage", "Bildirim açılamadı. TELSİZ’i Ana Ekran simgesinden açıp tekrar dene.");
   }
+}
+
+async function ensureAnonymousUser() {
+  await auth.authStateReady();
+  user = auth.currentUser || (await signInAnonymously(auth)).user;
+  return user;
+}
+
+function decodeVapidKey(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(padded + "=".repeat((4 - padded.length % 4) % 4));
+  return Uint8Array.from(raw, character => character.charCodeAt(0));
+}
+
+async function registerEmergencyPush() {
+  await ensureAnonymousUser();
+  const registration = await navigator.serviceWorker.ready;
+  if (!registration.pushManager) throw new Error("Bu tarayıcı web push bildirimlerini desteklemiyor.");
+  let subscription = await registration.pushManager.getSubscription();
+  if (!subscription) {
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: decodeVapidKey(VAPID_PUBLIC_KEY)
+    });
+  }
+  const serialized = subscription.toJSON();
+  if (!serialized.endpoint || !serialized.keys?.p256dh || !serialized.keys?.auth) {
+    throw new Error("Bildirim cihaz kaydı okunamadı. İzni yeniden açıp dene.");
+  }
+  await setDoc(doc(db, "webPushDevices", user.uid), {
+    uid: user.uid,
+    endpoint: serialized.endpoint,
+    keys: serialized.keys,
+    updatedAt: serverTimestamp()
+  });
+}
+
+function emergencyMessage(message) {
+  document.querySelectorAll(".emergency-message").forEach(element => { element.textContent = message; });
+}
+
+async function sendEmergencyAlert(button) {
+  button.disabled = true;
+  button.querySelector("span").textContent = "ACİL BİLDİRİM GÖNDERİLİYOR…";
+  emergencyMessage("Acil durum bildirimi gönderiliyor…");
+  try {
+    const name = validName($("nameInput").value) || (() => {
+      try { return validName(localStorage.getItem("telsiz-name") || ""); } catch { return ""; }
+    })();
+    if (!name) throw new Error("Acil bildirim göndermek için önce adını kaydet.");
+    await ensureAnonymousUser();
+    const call = httpsCallable(functions, "sendEmergencyAlert", { timeout: 15_000 });
+    const response = await call({ name });
+    const registered = Number(response.data?.registered) || 0;
+    const delivered = Number(response.data?.delivered) || 0;
+    if (delivered === 0) {
+      await publishEmergencyToOpenClients(user.uid, name);
+      emergencyMessage(registered === 0
+        ? "Acil uyarı açık TELSİZ sayfalarına gönderildi. Sayfa kapalıysa telefon bildirimi için push sunucusu gerekir."
+        : "Push ulaşmadı; acil uyarı açık TELSİZ sayfalarına gönderildi.");
+    } else {
+      emergencyMessage(`Acil bildirim ${delivered}/${registered} kayıtlı cihaza iletildi.`);
+    }
+  } catch (error) {
+    if (["functions/not-found", "functions/unavailable"].includes(error.code)) {
+      try {
+        const name = validName($("nameInput").value) || (() => {
+          try { return validName(localStorage.getItem("telsiz-name") || ""); } catch { return ""; }
+        })();
+        await ensureAnonymousUser();
+        await publishEmergencyToOpenClients(user.uid, name);
+        emergencyMessage("Acil uyarı açık TELSİZ sayfalarına gönderildi. Sayfa kapalıysa telefon bildirimi için push sunucusu gerekir.");
+        return;
+      } catch (fallbackError) {
+        if (fallbackError.code === "emergency/cooldown") {
+          emergencyMessage("Yeni acil bildirim için iki dakika bekle.");
+          return;
+        }
+        emergencyMessage(fallbackError.message || "Acil uyarı gönderilemedi.");
+        return;
+      }
+    }
+    const detail = error.code === "functions/not-found" || error.code === "functions/unavailable"
+      ? "Acil bildirim sunucusu henüz etkin değil."
+      : error.code === "functions/resource-exhausted"
+        ? "Yeni acil bildirim için iki dakika bekle."
+        : (error.message || "Bildirim gönderilemedi.");
+    emergencyMessage(detail);
+  } finally {
+    button.disabled = false;
+    button.querySelector("span").textContent = "🆘 ACİL DURUM — 3 SN BASILI TUT";
+    button.style.setProperty("--hold-progress", "0%");
+  }
+}
+
+async function publishEmergencyToOpenClients(uid, name) {
+  if (!name) throw new Error("Acil bildirim göndermek için önce adını kaydet.");
+  const rateLimitRef = doc(db, "emergencyWebRateLimits", uid);
+  const alertRef = doc(collection(db, "emergencyAlerts"));
+  await runTransaction(db, async transaction => {
+    const previous = await transaction.get(rateLimitRef);
+    const lastSentAt = previous.get("lastSentAt")?.toMillis?.() || 0;
+    if (Date.now() - lastSentAt < 120_000) {
+      const error = new Error("Yeni acil bildirim için iki dakika bekle.");
+      error.code = "emergency/cooldown";
+      throw error;
+    }
+    transaction.set(rateLimitRef, { uid, lastSentAt: serverTimestamp() });
+    transaction.set(alertRef, { uid, name, createdAt: serverTimestamp() });
+  });
+}
+
+function receiveEmergencyAlert(name) {
+  const message = `${name} acil durum bildirimi gönderdi.`;
+  emergencyMessage(message);
+  const toast = $("talkToast");
+  toast.textContent = `🆘 ${message}`;
+  toast.classList.remove("hidden");
+  clearTimeout(talkToastTimer);
+  talkToastTimer = setTimeout(() => toast.classList.add("hidden"), 7000);
+  if (typeof navigator.vibrate === "function") navigator.vibrate([180, 100, 180, 100, 500]);
+  if ("Notification" in window && Notification.permission === "granted") {
+    navigator.serviceWorker?.ready.then(registration => registration.showNotification("TELSİZ · ACİL DURUM", {
+      body: message,
+      icon: "/icons/apple-touch-icon.png",
+      badge: "/icons/apple-touch-icon.png",
+      tag: "telsiz-emergency-open-client",
+      renotify: true,
+      vibrate: [180, 100, 180, 100, 500]
+    })).catch(() => {});
+  }
+}
+
+async function watchEmergencyAlerts() {
+  await ensureAnonymousUser();
+  if (emergencyAlertsUnsubscribe) emergencyAlertsUnsubscribe();
+  emergencyAlertsSnapshotReady = false;
+  const recent = Timestamp.fromMillis(Date.now() - 86_400_000);
+  const alerts = query(collection(db, "emergencyAlerts"), where("createdAt", ">", recent), orderBy("createdAt", "desc"), limit(30));
+  emergencyAlertsUnsubscribe = onSnapshot(alerts, snapshot => {
+    if (!emergencyAlertsSnapshotReady) {
+      emergencyAlertsSnapshotReady = true;
+      return;
+    }
+    for (const change of snapshot.docChanges()) {
+      if (change.type !== "added") continue;
+      const alert = change.doc.data();
+      if (alert.uid !== user.uid && typeof alert.name === "string") receiveEmergencyAlert(alert.name);
+    }
+  }, error => console.warn("Acil uyarı kanalı bağlanamadı", error));
+}
+
+function startEmergencyHold(button, event) {
+  if (button.disabled || emergencyHoldButton) return;
+  if (event.type === "pointerdown" && event.pointerType === "mouse" && event.button !== 0) return;
+  if (event.type === "keydown" && event.repeat) return;
+  event.preventDefault();
+  emergencyHoldButton = button;
+  emergencyHoldTriggered = false;
+  button.classList.add("holding");
+  const startedAt = performance.now();
+  emergencyProgressTimer = setInterval(() => {
+    const progress = Math.min(100, (performance.now() - startedAt) / 30);
+    button.style.setProperty("--hold-progress", `${progress}%`);
+  }, 40);
+  emergencyHoldTimer = setTimeout(() => {
+    emergencyHoldTriggered = true;
+    clearInterval(emergencyProgressTimer);
+    emergencyProgressTimer = null;
+    void sendEmergencyAlert(button).finally(() => {
+      button.classList.remove("holding");
+      emergencyHoldButton = null;
+      emergencyHoldTriggered = false;
+    });
+  }, 3000);
+}
+
+function endEmergencyHold(button) {
+  if (emergencyHoldButton !== button || emergencyHoldTriggered) return;
+  clearTimeout(emergencyHoldTimer);
+  clearInterval(emergencyProgressTimer);
+  emergencyHoldTimer = null;
+  emergencyProgressTimer = null;
+  emergencyHoldButton = null;
+  button.classList.remove("holding");
+  button.style.setProperty("--hold-progress", "0%");
 }
 
 function notifyNewTalkers(previous, current) {
@@ -474,7 +668,7 @@ async function joinChannel() {
       audioContext = new AudioContextType({ latencyHint: "interactive" });
       audioContext.resume().catch(() => {});
     }
-    user = (await signInAnonymously(auth)).user;
+    user = await ensureAnonymousUser();
     await refreshIceServers();
     await cleanStaleSessions();
     const current = await getDocs(query(members, limit(MAX_PEOPLE + 1)));
@@ -669,9 +863,29 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", muteForBackground);
 $("notificationButton").addEventListener("click", enableNotifications);
 if ("Notification" in window && Notification.permission === "granted") {
-  $("notificationButton").textContent = "BİLDİRİMİ TEST ET";
-  say("notificationMessage", "Bildirim izni açık. Düğmeye basıp deneme bildirimi gönder.");
+  $("notificationButton").textContent = "ACİL BİLDİRİMLER AÇIK · TEST ET";
+  say("notificationMessage", "Bildirim izni açık. Acil uyarı kanalı hazırlanıyor…");
+  void registerEmergencyPush().then(() => {
+    say("notificationMessage", "Bildirim izni açık. TELSİZ sayfası çalışırken ekip acil uyarıları görünür.");
+  }).catch(error => {
+    say("notificationMessage", error.message || "Acil bildirim kaydı yenilenemedi. Düğmeye basıp tekrar dene.");
+  });
 }
+
+document.querySelectorAll(".emergency-button").forEach(button => {
+  button.addEventListener("pointerdown", event => startEmergencyHold(button, event));
+  ["pointerup", "pointercancel", "lostpointercapture", "pointerleave"].forEach(type => {
+    button.addEventListener(type, () => endEmergencyHold(button));
+  });
+  button.addEventListener("keydown", event => {
+    if (event.key === " " || event.key === "Enter") startEmergencyHold(button, event);
+  });
+  button.addEventListener("keyup", event => {
+    if (event.key === " " || event.key === "Enter") endEmergencyHold(button);
+  });
+  button.addEventListener("contextmenu", event => event.preventDefault());
+  button.addEventListener("click", event => event.preventDefault());
+});
 
 function rememberName(value) {
   try { localStorage.setItem("telsiz-name", validName(value)); } catch {}
@@ -683,3 +897,4 @@ try {
   }
 } catch {}
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+void watchEmergencyAlerts().catch(error => console.warn("Acil uyarı kanalı başlatılamadı", error));

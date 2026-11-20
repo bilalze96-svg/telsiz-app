@@ -7,10 +7,13 @@ import { onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { createProviderToken, createPttPayload, sendPttPush } from "./apns.js";
 import { createTurnCredentials } from "./turn.js";
+import { deliverEmergencyWebPush, VAPID_PUBLIC_KEY } from "./webpush.js";
+import { setVapidDetails } from "web-push";
 
 initializeApp();
 
 const apnsKey = defineSecret("TELSIZ_APNS_AUTH_KEY");
+const webPushPrivateKey = defineSecret("TELSIZ_WEBPUSH_PRIVATE_KEY");
 const apnsKeyId = defineString("TELSIZ_APNS_KEY_ID");
 const appleTeamId = defineString("TELSIZ_APPLE_TEAM_ID");
 const iosBundleId = defineString("TELSIZ_IOS_BUNDLE_ID", { default: "com.bilalze96.telsiz" });
@@ -76,7 +79,11 @@ export const notifyNativePttListeners = onDocumentUpdated({
   logger.info("Native PTT wake pushes sent", { total: pushes.length, failed: failed.length });
 });
 
-export const sendEmergencyAlert = onCall({ region: "europe-west3", maxInstances: 2 }, async request => {
+export const sendEmergencyAlert = onCall({
+  region: "europe-west3",
+  secrets: [webPushPrivateKey],
+  maxInstances: 2
+}, async request => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Anonymous sign-in is required.");
   const name = typeof request.data?.name === "string" ? request.data.name.trim().slice(0, 24) : "";
@@ -93,32 +100,50 @@ export const sendEmergencyAlert = onCall({ region: "europe-west3", maxInstances:
     transaction.set(limiter, { lastSentAt: new Date() });
   });
 
-  const devices = await db.collection("pushDevices").get();
-  const recipients = devices.docs
+  const [nativeDevices, webDevices] = await Promise.all([
+    db.collection("pushDevices").get(),
+    db.collection("webPushDevices").get()
+  ]);
+  const nativeRecipients = nativeDevices.docs
     .filter(document => document.id !== uid && typeof document.get("token") === "string")
     .map(document => ({ reference: document.ref, token: document.get("token") }));
-  if (recipients.length === 0) return { registered: 0, delivered: 0 };
+  const webSubscriptions = webDevices.docs.map(document => ({
+    uid: document.id,
+    reference: document.ref,
+    endpoint: document.get("endpoint"),
+    keys: document.get("keys")
+  }));
+  let webResult = { registered: 0, delivered: 0, stale: [] };
+  if (webSubscriptions.some(device => device.uid !== uid)) {
+    setVapidDetails("https://telsiz-app-88ecf.web.app", VAPID_PUBLIC_KEY, webPushPrivateKey.value());
+    webResult = await deliverEmergencyWebPush({ devices: webSubscriptions, senderUid: uid, name });
+  }
 
-  const result = await getMessaging(getApp()).sendEachForMulticast({
-    tokens: recipients.map(recipient => recipient.token),
-    notification: {
-      title: "TELSİZ · ACİL DURUM",
-      body: `${name} yardım çağrısı gönderdi.`
-    },
-    data: { kind: "emergency", sender: name },
-    apns: { headers: { "apns-push-type": "alert", "apns-priority": "10" }, payload: { aps: { sound: "default", badge: 1 } } },
-    android: { priority: "high", notification: { sound: "default" } }
-  });
+  let nativeResult = { successCount: 0, responses: [] };
+  if (nativeRecipients.length) {
+    nativeResult = await getMessaging(getApp()).sendEachForMulticast({
+      tokens: nativeRecipients.map(recipient => recipient.token),
+      notification: {
+        title: "TELSİZ · ACİL DURUM",
+        body: `${name} yardım çağrısı gönderdi.`
+      },
+      data: { kind: "emergency", sender: name },
+      apns: { headers: { "apns-push-type": "alert", "apns-priority": "10" }, payload: { aps: { sound: "default", badge: 1 } } },
+      android: { priority: "high", notification: { sound: "default" } }
+    });
+  }
 
-  const stale = result.responses.flatMap((response, index) => {
+  const staleNative = nativeResult.responses.flatMap((response, index) => {
     const code = response.error?.code;
     return code === "messaging/registration-token-not-registered" || code === "messaging/invalid-registration-token"
-      ? [recipients[index].reference]
+      ? [nativeRecipients[index].reference]
       : [];
   });
-  await Promise.all(stale.map(reference => reference.delete().catch(() => {})));
-  logger.info("Emergency notification processed", { registered: recipients.length, delivered: result.successCount });
-  return { registered: recipients.length, delivered: result.successCount };
+  await Promise.all([...staleNative, ...webResult.stale].map(reference => reference.delete().catch(() => {})));
+  const registered = nativeRecipients.length + webResult.registered;
+  const delivered = nativeResult.successCount + webResult.delivered;
+  logger.info("Emergency notification processed", { registered, delivered });
+  return { registered, delivered };
 });
 
 export const getTurnCredentials = onCall({

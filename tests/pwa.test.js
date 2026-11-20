@@ -42,3 +42,19 @@ test("name is saved as it is typed and radio release has a transmitted tone", as
   assert.ok(app.includes("playReleaseTone();"));
 });
 
+test("the emergency action requires a three-second hold and calls the server", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  assert.equal((html.match(/class="emergency-button"/g) || []).length, 2);
+  assert.ok(app.includes("}, 3000);"));
+  assert.ok(app.includes('httpsCallable(functions, "sendEmergencyAlert"'));
+  assert.ok(app.includes('doc(db, "webPushDevices", user.uid)'));
+  assert.ok(app.includes("registration.pushManager.subscribe"));
+});
+
+test("the service worker displays remote push alerts and keeps clicks on this site", async () => {
+  const serviceWorker = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
+  assert.ok(serviceWorker.includes('self.addEventListener("push"'));
+  assert.ok(serviceWorker.includes("self.registration.showNotification(title, options)"));
+  assert.ok(serviceWorker.includes("url.origin === self.location.origin"));
+});
