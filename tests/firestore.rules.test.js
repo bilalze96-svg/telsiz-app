@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { after, before, beforeEach, test } from "node:test";
 import { assertFails, assertSucceeds, initializeTestEnvironment } from "@firebase/rules-unit-testing";
 import {
-  collection, deleteDoc, doc, getDocs, limit, query, serverTimestamp,
-  runTransaction, setDoc, Timestamp, updateDoc
+  collection, deleteDoc, doc, getDocs, limit, onSnapshot, orderBy, query, serverTimestamp,
+  runTransaction, setDoc, Timestamp, updateDoc, where
 } from "firebase/firestore";
 
 const projectId = "telsiz-app-88ecf";
@@ -196,6 +196,52 @@ test("emergency alerts reach open clients and require a two-minute owner cooldow
   await assertFails(setDoc(doc(recipient, "emergencyWebRateLimits", "user-a"), {
     uid: "user-a", lastSentAt: serverTimestamp()
   }));
+});
+
+test("an active recipient receives the alert as a realtime Firestore update", async () => {
+  const owner = firestoreFor("user-a");
+  const recipient = firestoreFor("user-b");
+  const rateLimit = doc(owner, "emergencyWebRateLimits", "user-a");
+  const alert = doc(collection(owner, "emergencyAlerts"));
+  const alerts = query(
+    collection(recipient, "emergencyAlerts"),
+    where("createdAt", ">", Timestamp.fromMillis(Date.now() - 86_400_000)),
+    orderBy("createdAt", "desc"),
+    limit(30)
+  );
+
+  let initialSnapshotResolve;
+  let alertResolve;
+  let unsubscribe;
+  const initialSnapshot = new Promise(resolve => { initialSnapshotResolve = resolve; });
+  const receivedAlert = new Promise(resolve => { alertResolve = resolve; });
+  let initialized = false;
+  unsubscribe = onSnapshot(alerts, snapshot => {
+    if (!initialized) {
+      initialized = true;
+      initialSnapshotResolve();
+      return;
+    }
+    const added = snapshot.docChanges().find(change => change.type === "added");
+    if (added) alertResolve(added.doc.data());
+  });
+
+  try {
+    await initialSnapshot;
+    await runTransaction(owner, async transaction => {
+      await transaction.get(rateLimit);
+      transaction.set(rateLimit, { uid: "user-a", lastSentAt: serverTimestamp() });
+      transaction.set(alert, { uid: "user-a", name: "Ece", createdAt: serverTimestamp() });
+    });
+    const result = await Promise.race([
+      receivedAlert,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Live alert did not reach the subscriber")), 3000))
+    ]);
+    assert.equal(result.uid, "user-a");
+    assert.equal(result.name, "Ece");
+  } finally {
+    unsubscribe();
+  }
 });
 
 test("short-lived server-side TURN credentials cannot be read or changed by clients", async () => {

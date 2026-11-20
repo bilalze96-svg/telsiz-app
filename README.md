@@ -7,7 +7,7 @@ Tek sabit bağlantı, tek genel kanal: adını yazıp gir, basılı tutup konuş
 - Firebase Anonymous Authentication isimsiz oturum açar; Firestore kanaldaki kişileri ve WebRTC bağlantı sinyallerini taşır.
 - Ses, tarayıcılar arasında doğrudan WebRTC ile gider. Ses kaydı ve sohbet yoktur.
 - Konuşmak için düğmeyi basılı tut; bırakınca mikrofon sessize alınır. Karşıya giden sese dar bant filtresi, belirgin sıkıştırma, kısa PTT çift bip'i ve cızırtı uygulanır.
-- Bildirim iznini “Bildirimleri aç” düğmesinden ver. Üç saniye basılı tutulan acil durum düğmesi kanala bağlı olmayan, TELSİZ sayfası açık kullanıcıların ekranında uyarı gösterir. iPhone’da web bildirimi için önce Ana Ekran’a ekleyip TELSİZ’i simgesinden açmak gerekir.
+- Bildirim iznini “Bildirimleri aç” düğmesinden ver. Tek dokunuşla gönderilen acil durum uyarısı kanala bağlı olmayan, TELSİZ sayfası açık kullanıcıların ekranında görünür. iPhone’da sistem bildirimi için önce Ana Ekran’a ekleyip TELSİZ’i simgesinden açmak gerekir.
 - Arka plana geçince mikrofon susturulur ve WebRTC oturumu bilerek kapatılmaz. iOS sayfayı askıya alırsa bağlantı geçici olarak düşebilir; uygulamaya dönünce oturum ve mikrofon yeniden bağlanmayı dener. iPhone ekran kilitliyken canlı sesin sürmesi Safari/PWA tarafından garanti edilmez.
 - PWA push abonelik kaydı ve sunucu gönderim kodu hazırdır. Uygulama kapalıyken push göndermek için Firebase Functions'ın Blaze planında dağıtılması gerekir. Mevcut Firebase projesi Spark planında olduğundan canlı sürüm şu anda açık TELSİZ oturumlarına Firestore üzerinden uyarı gönderir; uygulama kapalı cihazlara push ulaşmaz.
 - Arayüz en fazla 10 kişi gösterir. Bu basit sürümde sayı sunucu tarafında zorlanmaz.

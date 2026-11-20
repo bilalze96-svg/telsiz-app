@@ -46,10 +46,6 @@ let joined = false;
 let channelSnapshotInitialized = false;
 let talkToastTimer = null;
 let talkReleaseTimer = null;
-let emergencyHoldTimer = null;
-let emergencyProgressTimer = null;
-let emergencyHoldButton = null;
-let emergencyHoldTriggered = false;
 let emergencyAlertsUnsubscribe = null;
 let emergencyAlertsSnapshotReady = false;
 
@@ -156,56 +152,26 @@ function emergencyMessage(message) {
 }
 
 async function sendEmergencyAlert(button) {
+  if (button.disabled) return;
   button.disabled = true;
-  button.querySelector("span").textContent = "ACİL BİLDİRİM GÖNDERİLİYOR…";
-  emergencyMessage("Acil durum bildirimi gönderiliyor…");
+  button.querySelector("span").textContent = "GÖNDERİLİYOR…";
+  emergencyMessage("Acil uyarı gönderiliyor…");
   try {
     const name = validName($("nameInput").value) || (() => {
       try { return validName(localStorage.getItem("telsiz-name") || ""); } catch { return ""; }
     })();
     if (!name) throw new Error("Acil bildirim göndermek için önce adını kaydet.");
     await ensureAnonymousUser();
-    const call = httpsCallable(functions, "sendEmergencyAlert", { timeout: 15_000 });
-    const response = await call({ name });
-    const registered = Number(response.data?.registered) || 0;
-    const delivered = Number(response.data?.delivered) || 0;
-    if (delivered === 0) {
-      await publishEmergencyToOpenClients(user.uid, name);
-      emergencyMessage(registered === 0
-        ? "Acil uyarı açık TELSİZ sayfalarına gönderildi. Sayfa kapalıysa telefon bildirimi için push sunucusu gerekir."
-        : "Push ulaşmadı; acil uyarı açık TELSİZ sayfalarına gönderildi.");
-    } else {
-      emergencyMessage(`Acil bildirim ${delivered}/${registered} kayıtlı cihaza iletildi.`);
-    }
+    await publishEmergencyToOpenClients(user.uid, name);
+    emergencyMessage("Acil uyarı açık TELSİZ sayfalarına iletildi. Kapalı sayfalara bildirim gönderilmez.");
+    if (typeof navigator.vibrate === "function") navigator.vibrate([100, 60, 180]);
   } catch (error) {
-    if (["functions/not-found", "functions/unavailable"].includes(error.code)) {
-      try {
-        const name = validName($("nameInput").value) || (() => {
-          try { return validName(localStorage.getItem("telsiz-name") || ""); } catch { return ""; }
-        })();
-        await ensureAnonymousUser();
-        await publishEmergencyToOpenClients(user.uid, name);
-        emergencyMessage("Acil uyarı açık TELSİZ sayfalarına gönderildi. Sayfa kapalıysa telefon bildirimi için push sunucusu gerekir.");
-        return;
-      } catch (fallbackError) {
-        if (fallbackError.code === "emergency/cooldown") {
-          emergencyMessage("Yeni acil bildirim için iki dakika bekle.");
-          return;
-        }
-        emergencyMessage(fallbackError.message || "Acil uyarı gönderilemedi.");
-        return;
-      }
-    }
-    const detail = error.code === "functions/not-found" || error.code === "functions/unavailable"
-      ? "Acil bildirim sunucusu henüz etkin değil."
-      : error.code === "functions/resource-exhausted"
-        ? "Yeni acil bildirim için iki dakika bekle."
-        : (error.message || "Bildirim gönderilemedi.");
-    emergencyMessage(detail);
+    emergencyMessage(error.code === "emergency/cooldown"
+      ? "Yeni acil bildirim için iki dakika bekle."
+      : error.message || "Acil uyarı gönderilemedi. İnternet bağlantısını kontrol et.");
   } finally {
     button.disabled = false;
-    button.querySelector("span").textContent = "🆘 ACİL DURUM — 3 SN BASILI TUT";
-    button.style.setProperty("--hold-progress", "0%");
+    button.querySelector("span").textContent = "🆘 ACİL DURUM BİLDİR";
   }
 }
 
@@ -264,42 +230,6 @@ async function watchEmergencyAlerts() {
       if (alert.uid !== user.uid && typeof alert.name === "string") receiveEmergencyAlert(alert.name);
     }
   }, error => console.warn("Acil uyarı kanalı bağlanamadı", error));
-}
-
-function startEmergencyHold(button, event) {
-  if (button.disabled || emergencyHoldButton) return;
-  if (event.type === "pointerdown" && event.pointerType === "mouse" && event.button !== 0) return;
-  if (event.type === "keydown" && event.repeat) return;
-  event.preventDefault();
-  emergencyHoldButton = button;
-  emergencyHoldTriggered = false;
-  button.classList.add("holding");
-  const startedAt = performance.now();
-  emergencyProgressTimer = setInterval(() => {
-    const progress = Math.min(100, (performance.now() - startedAt) / 30);
-    button.style.setProperty("--hold-progress", `${progress}%`);
-  }, 40);
-  emergencyHoldTimer = setTimeout(() => {
-    emergencyHoldTriggered = true;
-    clearInterval(emergencyProgressTimer);
-    emergencyProgressTimer = null;
-    void sendEmergencyAlert(button).finally(() => {
-      button.classList.remove("holding");
-      emergencyHoldButton = null;
-      emergencyHoldTriggered = false;
-    });
-  }, 3000);
-}
-
-function endEmergencyHold(button) {
-  if (emergencyHoldButton !== button || emergencyHoldTriggered) return;
-  clearTimeout(emergencyHoldTimer);
-  clearInterval(emergencyProgressTimer);
-  emergencyHoldTimer = null;
-  emergencyProgressTimer = null;
-  emergencyHoldButton = null;
-  button.classList.remove("holding");
-  button.style.setProperty("--hold-progress", "0%");
 }
 
 function notifyNewTalkers(previous, current) {
@@ -873,18 +803,7 @@ if ("Notification" in window && Notification.permission === "granted") {
 }
 
 document.querySelectorAll(".emergency-button").forEach(button => {
-  button.addEventListener("pointerdown", event => startEmergencyHold(button, event));
-  ["pointerup", "pointercancel", "lostpointercapture", "pointerleave"].forEach(type => {
-    button.addEventListener(type, () => endEmergencyHold(button));
-  });
-  button.addEventListener("keydown", event => {
-    if (event.key === " " || event.key === "Enter") startEmergencyHold(button, event);
-  });
-  button.addEventListener("keyup", event => {
-    if (event.key === " " || event.key === "Enter") endEmergencyHold(button);
-  });
-  button.addEventListener("contextmenu", event => event.preventDefault());
-  button.addEventListener("click", event => event.preventDefault());
+  button.addEventListener("click", () => void sendEmergencyAlert(button));
 });
 
 function rememberName(value) {
