@@ -42,6 +42,17 @@ test("name is saved as it is typed and radio release has a transmitted tone", as
   assert.ok(app.includes("playReleaseTone();"));
 });
 
+test("radio speech is band-limited, saturated, compressed, and mixed with gated static", async () => {
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  assert.ok(app.includes('highPass.frequency.value = 285;'));
+  assert.ok(app.includes('lowPass.frequency.value = 2450;'));
+  assert.ok(app.includes('presence.type = "peaking";'));
+  assert.ok(app.includes('compressor.ratio.value = 10;'));
+  assert.ok(app.includes('noiseBand.type = "bandpass";'));
+  assert.ok(app.includes('value ? 0.022 : 0'));
+  assert.ok(app.includes('radioNoiseGain).connect(destination)'));
+});
+
 test("one tap sends an emergency alert directly through Firestore", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
