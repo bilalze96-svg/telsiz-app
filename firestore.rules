@@ -98,5 +98,9 @@ service cloud.firestore {
 
       allow delete: if anonymous() && request.auth.uid == uid;
     }
+
+    match /turnCredentials/{uid} {
+      allow read, write: if false;
+    }
   }
 }

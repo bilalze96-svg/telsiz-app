@@ -6,6 +6,7 @@ import * as logger from "firebase-functions/logger";
 import { onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { createProviderToken, createPttPayload, sendPttPush } from "./apns.js";
+import { createTurnCredentials } from "./turn.js";
 
 initializeApp();
 
@@ -14,6 +15,8 @@ const apnsKeyId = defineString("TELSIZ_APNS_KEY_ID");
 const appleTeamId = defineString("TELSIZ_APPLE_TEAM_ID");
 const iosBundleId = defineString("TELSIZ_IOS_BUNDLE_ID", { default: "com.bilalze96.telsiz" });
 const emergencyCooldownMs = 120_000;
+const twilioAccountSid = defineString("TELSIZ_TWILIO_ACCOUNT_SID");
+const twilioAuthToken = defineSecret("TELSIZ_TWILIO_AUTH_TOKEN");
 let cachedProviderToken = "";
 let tokenCreatedAt = 0;
 
@@ -116,4 +119,39 @@ export const sendEmergencyAlert = onCall({ region: "europe-west3", maxInstances:
   await Promise.all(stale.map(reference => reference.delete().catch(() => {})));
   logger.info("Emergency notification processed", { registered: recipients.length, delivered: result.successCount });
   return { registered: recipients.length, delivered: result.successCount };
+});
+
+export const getTurnCredentials = onCall({
+  region: "europe-west3",
+  secrets: [twilioAuthToken],
+  maxInstances: 2
+}, async request => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Anonymous sign-in is required.");
+  const db = getFirestore(getApp(), "default");
+  const cacheRef = db.collection("turnCredentials").doc(uid);
+  const now = Date.now();
+  const cached = await db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(cacheRef);
+    const expiresAt = snapshot.get("expiresAt")?.toMillis?.() ?? 0;
+    if (expiresAt > now + 120_000) return snapshot.get("iceServers");
+    return null;
+  });
+  if (Array.isArray(cached)) return { iceServers: cached };
+
+  try {
+    const iceServers = await createTurnCredentials({
+      accountSid: twilioAccountSid.value(),
+      authToken: twilioAuthToken.value()
+    });
+    await cacheRef.set({
+      iceServers,
+      expiresAt: new Date(now + 3_600_000),
+      updatedAt: new Date()
+    });
+    return { iceServers };
+  } catch (error) {
+    logger.error("Failed to obtain managed TURN credentials", { message: error.message });
+    throw new HttpsError("unavailable", "TURN credentials are unavailable.");
+  }
 });

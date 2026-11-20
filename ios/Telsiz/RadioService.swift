@@ -35,6 +35,7 @@ final class RadioService: NSObject, ObservableObject {
 
     private let database = Firestore.firestore(database: "default")
     private let factory = RTCPeerConnectionFactory()
+    private var iceServers = [RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])]
     private var channelManager: PTChannelManager?
     private var authUser: User?
     private var sessionId = ""
@@ -51,7 +52,6 @@ final class RadioService: NSObject, ObservableObject {
 
     private override init() {
         super.init()
-        RTCPeerConnectionFactory.initializeSSL()
     }
 
     func preparePushToTalk() async {
@@ -88,6 +88,7 @@ final class RadioService: NSObject, ObservableObject {
             guard let channelManager else { throw RadioError.pttUnavailable }
             guard try await requestMicrophonePermission() else { throw RadioError.microphoneDenied }
             authUser = try await anonymousUser()
+            await refreshIceServers()
             try await createFirebaseSession()
             channelManager.requestJoinChannel(
                 channelUUID: Self.channelUUID,
@@ -111,13 +112,14 @@ final class RadioService: NSObject, ObservableObject {
         displayName = name
         do {
             authUser = try await anonymousUser()
+            await refreshIceServers()
             try await createFirebaseSession()
             if let pushToken { try await storePushToken(pushToken) }
             isJoined = true
             joining = false
             startWatching()
             status = "KANALDA"
-            try await channelManager?.setServiceStatus(.ready, channelUUID: Self.channelUUID)
+            await channelManager?.setServiceStatus(.ready, channelUUID: Self.channelUUID)
         } catch {
             message = "Kanal geri yüklenemedi: \(error.localizedDescription)"
             joining = false
@@ -154,6 +156,34 @@ final class RadioService: NSObject, ObservableObject {
                 AVCaptureDevice.requestAccess(for: .audio) { continuation.resume(returning: $0) }
             }
         @unknown default: return false
+        }
+    }
+
+    private func refreshIceServers() async {
+        iceServers = [RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])]
+        do {
+            let result = try await Functions.functions(region: "europe-west3")
+                .httpsCallable("getTurnCredentials")
+                .call()
+            guard let payload = result.data as? [String: Any],
+                  let records = payload["iceServers"] as? [[String: Any]] else { return }
+            let configured = records.compactMap { record -> RTCIceServer? in
+                let urls: [String]
+                if let list = record["urls"] as? [String] { urls = list }
+                else if let url = record["urls"] as? String { urls = [url] }
+                else { return nil }
+                guard !urls.isEmpty else { return nil }
+                return RTCIceServer(
+                    urlStrings: urls,
+                    username: record["username"] as? String ?? "",
+                    credential: record["credential"] as? String ?? ""
+                )
+            }
+            if configured.contains(where: { $0.urlStrings.contains(where: { $0.hasPrefix("turn:") }) }) {
+                iceServers = configured
+            }
+        } catch {
+            message = "TURN yedeği kapalı; bazı ağlarda bağlantı kurulamayabilir."
         }
     }
 
@@ -214,7 +244,7 @@ final class RadioService: NSObject, ObservableObject {
     private func addPeerIfNeeded(id: String) {
         guard peers[id] == nil, let localAudioTrack else { return }
         var configuration = RTCConfiguration()
-        configuration.iceServers = [RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])]
+        configuration.iceServers = iceServers
         configuration.sdpSemantics = .unifiedPlan
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         guard let connection = factory.peerConnection(with: configuration, constraints: constraints, delegate: nil) else { return }
@@ -399,7 +429,7 @@ extension RadioService: PTChannelManagerDelegate, PTChannelRestorationDelegate, 
         status = "KANALDA"
         message = "Hazır. Basılı tutup konuş."
         startWatching()
-        Task { try? await channelManager.setServiceStatus(.ready, channelUUID: channelUUID) }
+        Task { await channelManager.setServiceStatus(.ready, channelUUID: channelUUID) }
     }
 
     func channelManager(_ channelManager: PTChannelManager, didLeaveChannel channelUUID: UUID, reason: PTChannelLeaveReason) {

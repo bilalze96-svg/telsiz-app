@@ -1,5 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInAnonymously } from "firebase/auth";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import {
   addDoc, collection, deleteDoc, doc, getDocs, getFirestore, limit, onSnapshot, orderBy,
   query, serverTimestamp, setDoc, Timestamp, updateDoc, where
@@ -16,10 +17,12 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app, "default");
+const functions = getFunctions(app, "europe-west3");
 const members = collection(db, "members");
 const MAX_PEOPLE = 10;
 const STALE_MS = 45_000;
-const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+let ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+let usingManagedTurn = false;
 const $ = id => document.getElementById(id);
 
 let user = null;
@@ -255,6 +258,23 @@ function updateTopStatus(text, online = false) {
   badge.classList.toggle("online", online);
 }
 
+async function refreshIceServers() {
+  usingManagedTurn = false;
+  ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+  try {
+    const callable = httpsCallable(functions, "getTurnCredentials", { timeout: 8000 });
+    const result = await callable();
+    const servers = result.data?.iceServers;
+    if (!Array.isArray(servers)) return;
+    const valid = servers.filter(server => server && (typeof server.urls === "string" || Array.isArray(server.urls)));
+    if (!valid.some(server => (Array.isArray(server.urls) ? server.urls : [server.urls]).some(url => url.startsWith("turn:")))) return;
+    ICE_SERVERS = valid;
+    usingManagedTurn = true;
+  } catch (error) {
+    console.info("Managed TURN is not configured; continuing with STUN", error.code || error.message);
+  }
+}
+
 async function sendSignal(toSession, kind, payload) {
   await addDoc(inboxRef(toSession), {
     fromSession: sessionId,
@@ -455,6 +475,7 @@ async function joinChannel() {
       audioContext.resume().catch(() => {});
     }
     user = (await signInAnonymously(auth)).user;
+    await refreshIceServers();
     await cleanStaleSessions();
     const current = await getDocs(query(members, limit(MAX_PEOPLE + 1)));
     const onlineCount = current.docs.filter(item => isFresh(item.data())).length;
@@ -480,7 +501,9 @@ async function joinChannel() {
     try { localStorage.setItem("telsiz-name", name); } catch {}
     $("joinPanel").classList.add("hidden");
     $("radioPanel").classList.remove("hidden");
-    say("radioMessage", "Hazır. Basılı tutup konuş.");
+    say("radioMessage", usingManagedTurn
+      ? "Hazır. Basılı tutup konuş."
+      : "Hazır. Bazı ağlarda TURN kurulana kadar bağlantı olmayabilir.");
     watchChannel();
   } catch (error) {
     localStream?.getTracks().forEach(track => track.stop());

@@ -153,3 +153,11 @@ test("a returning anonymous user can register one private emergency notification
   await assertFails(getDocs(collection(owner, "pushDevices")));
   await assertSucceeds(deleteDoc(token));
 });
+
+test("short-lived server-side TURN credentials cannot be read or changed by clients", async () => {
+  const owner = firestoreFor("user-a");
+  await assertFails(getDocs(collection(owner, "turnCredentials")));
+  await assertFails(setDoc(doc(owner, "turnCredentials", "user-a"), {
+    iceServers: [{ urls: "turn:example.invalid" }], expiresAt: Timestamp.fromMillis(Date.now() + 3600_000)
+  }));
+});
